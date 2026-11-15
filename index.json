@@ -1,0 +1,67 @@
+{
+  "format": 1,
+  "title": {
+    "en": "DSH plugins by magicbaobaoli",
+    "zh": "DSH 插件"
+  },
+  "plugins": [
+    {
+      "name": "dsh-getnote",
+      "title": {
+        "en": "Get笔记",
+        "zh": "得到大脑"
+      },
+      "description": {
+        "en": "Brings Get笔记 (得到大脑) notes into DSH: one sidebar panel over a local-first Markdown vault, with optional cloud access.\n\nWhat it does: browse by knowledge base and tag, full-text search, Markdown reading with Obsidian wikilinks and inline images, edit/create/delete; audio notes get a real player plus a timestamped transcript, and existing recording attachments in the vault play too; deleted notes land in a trash you can restore from. With cloud connected you can filter by knowledge base, create notes, edit titles and bodies, add/remove tags, mint share links, run semantic search, and push local edits back up.\n\nSync: optional automatic sync from 5 minutes to 12 hours, or manual incremental/full runs. A four-branch decision protects local edits, files changed on both sides go to .conflicts, and notes deleted in the cloud move to the trash.\n\nTwo transports, either one works: sign in to Get笔记 (OAuth, one authorization, recommended) or paste an official Open API key (members only). If the key stops working it silently falls back to the signed-in transport, so features keep working.\n\nLimits: cloud features need a Get笔记 membership, but Markdown already synced stays readable, editable and searchable locally forever. No enterprise delegated authorization, the recorder API is fail-closed, and there is no automatic two-way push.",
+        "zh": "把「得到大脑 / Get笔记」的笔记接进 DSH：左侧栏一个面板，本地优先的 Markdown 笔记库，可选连云端。\n\n能做什么：按知识库/标签浏览、全文搜索、Markdown 阅读（含 Obsidian 双链与图片附件）、编辑新建删除；录音笔记带原始音频播放器和按时间戳分条的逐字稿，库里已有的录音附件也能直接播；删除进回收站可恢复。连上云端后能按知识库筛选、新建笔记、改标题正文、增删标签、生成分享链接、语义搜索，也能把本地改动推回云端。\n\n同步：可开自动同步（间隔 5 分钟到 12 小时），或手动增量/全量；四分支决策保护本地修改，两边都改会另存 .conflicts，云端删除会进回收站。\n\n两条通道任选：登录得到大脑（OAuth，一次授权，推荐）或填官方 Open API 的 API Key（仅会员可用）；Key 失效会自动改用登录通道，功能不中断。\n\n限制：云端相关功能需要得到大脑会员，但已经同步下来的 Markdown 永远能在本地读、改、搜索；不做企业代授权；录音卡接口是 fail-closed 的；不做自动双向推送。"
+      },
+      "icon": "icon.svg",
+      "author": "magicbaobaoli",
+      "homepage": "https://github.com/magicbaobaoli/dsh-getnote#readme",
+      "repository": {
+        "url": "https://github.com/magicbaobaoli/dsh-getnote"
+      },
+      "metadata": {
+        "category": "notes",
+        "labels": [
+          {
+            "en": "Notes",
+            "zh": "笔记"
+          },
+          {
+            "en": "Local-first",
+            "zh": "本地优先"
+          },
+          {
+            "en": "Markdown",
+            "zh": "Markdown"
+          }
+        ]
+      },
+      "versions": [
+        {
+          "version": "0.2.0",
+          "publishTimestamp": 1794715690,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/magicbaobaoli/dsh-getnote",
+            "commit": "edf7f356ec06ac31261365fbb84e2b69e7206213"
+          },
+          "engines": {
+            "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+          }
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "categories": {
+      "notes": {
+        "title": {
+          "en": "Notes & knowledge",
+          "zh": "笔记与知识库"
+        }
+      }
+    }
+  }
+}
