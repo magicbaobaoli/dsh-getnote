@@ -354,6 +354,88 @@ try {
   check('只有登录通道时 transport=mcp', s4.json.api && s4.json.api.transport === 'mcp', JSON.stringify(s4.json.api && s4.json.api.transport))
 
 
+  // 18.5 回收站三件套：列表 / 恢复 / 永久删除
+  // 删除一直是「移进 .trash/」，但以前 host 上没有任何路由能把它们列出来或救回来，
+  // 用户点错删除就只能去文件管理器里翻隐藏目录。这组断言盯的就是这条回路。
+  const trashEmpty = await call('/trash/list')
+  check('回收站列表可用', trashEmpty.status === 200 && Array.isArray(trashEmpty.json.items), `status=${trashEmpty.status}`)
+
+  const toDelete = await call('/create', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ dir: '回收站验证', title: '要被删掉的笔记', content: '# 要被删掉的笔记\n\n回收站测试\n' }),
+  })
+  check('回收站：先建一篇笔记', toDelete.status === 200 && typeof toDelete.json.path === 'string', JSON.stringify(toDelete.json))
+
+  const trashDelRes = await call('/delete', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: toDelete.json.path }),
+  })
+  check('回收站：删除成功', trashDelRes.status === 200 && trashDelRes.json.ok === true, JSON.stringify(trashDelRes.json))
+
+  const afterDelete = await call('/tree')
+  check('回收站：删除后库里看不到', !afterDelete.json.entries.some((e) => e.title === '要被删掉的笔记'), JSON.stringify(afterDelete.json.entries.map((e) => e.title)))
+
+  const trashListed = await call('/trash/list')
+  const trashedItem = (trashListed.json.items || []).find((i) => i.title === '要被删掉的笔记')
+  check('回收站：列表里能看到它', trashedItem !== undefined, JSON.stringify((trashListed.json.items || []).map((i) => i.title)))
+  check('回收站：列表项带路径与大小',
+    trashedItem !== undefined && typeof trashedItem.path === 'string' && trashedItem.path.startsWith('.trash/') && typeof trashedItem.bytes === 'number',
+    JSON.stringify(trashedItem))
+
+  const statusWithTrash = await call('/status')
+  check('回收站：status 报出回收站条数', typeof statusWithTrash.json.trash === 'number' && statusWithTrash.json.trash >= 1, String(statusWithTrash.json.trash))
+
+  const trashRestoreRes = await call('/trash/restore', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: trashedItem.path }),
+  })
+  check('回收站：恢复成功', trashRestoreRes.status === 200 && typeof trashRestoreRes.json.path === 'string', JSON.stringify(trashRestoreRes.json))
+
+  const afterRestore = await call('/tree')
+  check('回收站：恢复后回到库里', afterRestore.json.entries.some((e) => e.title === '要被删掉的笔记'), JSON.stringify(afterRestore.json.entries.map((e) => e.title)))
+
+  const restoredRead = await call(`/read?path=${encodeURIComponent(trashRestoreRes.json.path)}`)
+  check('回收站：恢复后内容原样', restoredRead.status === 200 && String(restoredRead.json.content).includes('回收站测试'), `status=${restoredRead.status}`)
+
+  // 再删一次，走永久删除
+  const trashDelAgain = await call('/delete', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: trashRestoreRes.json.path }),
+  })
+  check('回收站：再删一次成功', trashDelAgain.status === 200, JSON.stringify(trashDelAgain.json))
+  const trashAgain = await call('/trash/list')
+  const purgeTarget = (trashAgain.json.items || []).find((i) => i.title === '要被删掉的笔记')
+  check('回收站：清空前能找到目标', purgeTarget !== undefined)
+
+  const trashPurgeRes = await call('/trash/purge', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: purgeTarget.path }),
+  })
+  check('回收站：永久删除成功', trashPurgeRes.status === 200 && Array.isArray(trashPurgeRes.json.purged) && trashPurgeRes.json.purged.length === 1, JSON.stringify(trashPurgeRes.json))
+
+  const trashAfterPurge = await call('/trash/list')
+  check('回收站：永久删除后列表空', !(trashAfterPurge.json.items || []).some((i) => i.title === '要被删掉的笔记'), JSON.stringify((trashAfterPurge.json.items || []).map((i) => i.title)))
+
+  // 越界防护：不能借恢复路由读/写库外文件
+  const badRestore = await call('/trash/restore', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: '../../secret.txt' }),
+  })
+  check('回收站：拒绝从库外路径恢复', badRestore.status === 400 || badRestore.status === 404, `status=${badRestore.status}`)
+
+  const notInTrash = await call('/trash/restore', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ path: 'README.md' }),
+  })
+  check('回收站：非 .trash 路径拒绝恢复', notInTrash.status === 400, `status=${notInTrash.status}`)
+
   // 19. 库目录被删后 status 报 missing 而不是静默换库
   await rm(vault, { recursive: true, force: true })
   const missing = await call('/status')

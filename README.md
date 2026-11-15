@@ -27,7 +27,11 @@
 **笔记（离线，完全不联网）**
 - 目录树（按知识库/主题分）、标签云、全文搜索
 - Markdown 阅读：标题、列表、任务列表、表格、引用、代码围栏、链接
-- 编辑保存（原文件留 `.bak`）、新建（`YYYY-MM-DD-标题.md`）、删除进 `.trash/` 可恢复
+- **Obsidian 双链**：正文里的 `[[另一篇笔记]]` / `[[目标|显示文字]]` 是可点的，点了直接跳到那篇笔记；
+  `![[图片.png]]` 会就地显示图片（按文件名在本文附件里找）
+- 编辑保存（原文件留 `.bak`）、新建（`YYYY-MM-DD-标题.md`）、删除进 `.trash/`
+- **回收站页签**：删除的笔记能看见、能一键恢复（撞名时自动改名，绝不覆盖）、能永久清空
+- 图片附件直接显示，不用切到文件管理器；播放器标题会自动去掉 `_<note_id>_audio` 这种机器后缀
 - 「复制引用」把绝对路径复制成 `@path`，直接粘到对话里让 DSH 读
 
 **云端（联网，直接操作得到大脑）**
@@ -35,7 +39,10 @@
 - **语义搜索**（官方 `recall`，按意思找，不是本地那个子串搜索）
 - 打开一篇笔记看详情，录音笔记带**原始音频播放器**
 - 改标题 / 改正文，保存即回写云端，并顺手刷新本地那份 `.md`
-- 删除、加标签、创建分享链接
+- **按知识库筛选**（顶上一排知识库 chip），**新建云端笔记**（可指定知识库）
+- 加标签 / 点标签上的 `×` 删标签、创建分享链接（可排除音频）
+- **把本地改动推回云端**：以前只能「云端 → 本地」单向，本地改完没法送回去；
+  现在详情页有一个推送按钮（会二次确认，推的是正文与标题）
 
 **音频**
 - 录音笔记的音频地址在 `attachments[type=audio].url`（一个会过期的签名 URL），
@@ -144,20 +151,20 @@ lib/mcp-cloud.js  把登录通道包成与 openapi.js 相同的接口（含音�
 lib/biji.js       OAuth（PKCE）与 MCP JSON-RPC 客户端
 lib/cloud-sync.js 同步引擎：四分支决策、指纹、Markdown 渲染、推送
 lib/sync.js       旧的一次性全量导入
-lib/client.js     浏览器产物：sidebar.panellist 入口 + main 面板（四个页签）
+lib/client.js     浏览器产物：sidebar.panellist 入口 + main 面板（五个页签）
 test/             四套离线测试，不联网
 ```
 
 ## 测试
 
 ```
-node test/vault.test.mjs    # 33 项：文件层、frontmatter、附件认领
+node test/vault.test.mjs    # 52 项：文件层、frontmatter、附件认领、回收站
 node test/sync.test.mjs     # 66 项：同步引擎（重点验「什么情况下不该动用户文件」）
-node test/host.test.mjs     # 83 项：/getnote/* 路由、凭证、白名单、SSRF 防护、Range
-node test/client.test.mjs   # 125 项：UI 结构、Markdown 渲染、播放器、进度条、逐字稿
+node test/host.test.mjs     # 99 项：/getnote/* 路由、凭证、白名单、SSRF 防护、Range、回收站
+node test/client.test.mjs   # 161 项：UI 结构、Markdown 渲染、播放器、逐字稿、双链、图片、回收站
 ```
 
-四套共 307 项，全部离线运行，不需要网络也不需要真实凭证。
+四套共 378 项，全部离线运行，不需要网络也不需要真实凭证。
 
 ## 边界
 

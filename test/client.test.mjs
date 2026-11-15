@@ -676,10 +676,12 @@ if (internals) {
   check('标题含正则字符不炸', strip('# a.b(c)\n\n正文', 'a.b(c)') === '正文')
 
   // 本地阅读区不能把 frontmatter 当正文铺出来
+  // 断言用 `\s*` 而不是直接接 `current`：这处调用带 options 参数后换了行，
+  // 死抠字面量会把「只是格式化」误判成「功能丢了」。
   check(
     '本地阅读区渲染 body 而不是 content',
-    /renderBlocks\(current\.body/.test(source),
-    /renderBlocks\(current\.body/.test(source) ? 'body' : 'content',
+    /renderBlocks\(\s*current\.body/.test(source),
+    /renderBlocks\(\s*current\.body/.test(source) ? 'body' : 'content',
   )
   check('云端阅读区也剥同名标题', /stripLeadingHeading\(detail\.content/.test(source))
 
@@ -741,6 +743,91 @@ if (internals) {
     check('普通代码块不认作逐字稿', looksLikeTranscript('const a = 1\nconsole.log(a)') === false)
     check('只有一行时间戳不认（可能只是偶然）', looksLikeTranscript('[00:00:00] 只有一行') === false)
     check('空串不认作逐字稿', looksLikeTranscript('') === false)
+
+    // ── 新增：图片附件 / 双链 / 知识库 / 回收站 ─────────────────────────────
+    const { renderEmbed, assetLabel, TrashPane } = internals
+
+    // 图片附件以前完全被丢掉：listAssets 明明返回 kind:'image'，客户端只 filter audio。
+    check('导出 renderEmbed', typeof renderEmbed === 'function')
+    const imgOptions = { assets: [{ kind: 'image', name: '照片.png', path: '生活记录/asset/照片.png' }] }
+    const imgEl = renderEmbed('照片.png', 'k1', imgOptions)
+    const imgFlat = imgEl === null ? [] : flatNodes(imgEl)
+    const imgNode = imgFlat.find((n) => n.type === 'img')
+    check('嵌入图片渲染成 img', imgNode !== undefined, JSON.stringify(imgFlat.map((n) => n.type)))
+    check(
+      '图片走本站 asset 端点而不是外链',
+      imgNode !== undefined && String(imgNode.props.src).startsWith('/getnote/asset?path='),
+      imgNode === undefined ? '' : String(imgNode.props.src),
+    )
+    check('图片懒加载', imgNode !== undefined && imgNode.props.loading === 'lazy')
+
+    // 嵌入非图片附件不要渲染成坏图
+    const poorOptions = { assets: [{ kind: 'transcript', name: '转写.md', path: 'x/asset/转写.md' }] }
+    const poorEl = renderEmbed('转写.md', 'k2', poorOptions)
+    check('嵌入非图片文件不渲染成 img', poorEl !== null && !flatNodes(poorEl).some((n) => n.type === 'img'))
+
+    // 找不到附件时也不能炸
+    let embedMissing = null
+    try {
+      embedMissing = renderEmbed('不存在的文件.png', 'k3', { assets: [] })
+    } catch (error) {
+      check('嵌入找不到附件时不抛错', false, String(error && error.message))
+    }
+    check('嵌入找不到附件时不抛错', true)
+
+    // 播放器标题去掉 _<note_id>_audio 这种长串，否则卡片上是一串数字
+    check('assetLabel 去掉 note_id', assetLabel('云端标题_1200000000000000001_audio.mp3') === '云端标题.mp3', assetLabel('云端标题_1200000000000000001_audio.mp3'))
+    check('assetLabel 去掉 transcript 后缀', assetLabel('云端标题_1200000000000000001_transcript.md') === '云端标题.md', assetLabel('云端标题_1200000000000000001_transcript.md'))
+    check('assetLabel 对普通名字不动', assetLabel('普通照片.png') === '普通照片.png', assetLabel('普通照片.png'))
+    check('assetLabel 空值安全', assetLabel('') === '' && assetLabel(undefined) === '')
+
+    // 双链：正文里的 [[目标]] 必须是可点按钮，而不是原样吐出来
+    const wl = renderInline('参见 [[另一篇笔记]] 和 [[目标|显示文字]]', 'k4', { onOpenWikiLink: () => {} })
+    const wlFlat = flatNodes(wl)
+    const wlButtons = wlFlat.filter((n) => n.type === 'button' && String(n.props.className).includes('dshgn_wikilink'))
+    check('双链渲染成按钮', wlButtons.length === 2, String(wlButtons.length))
+    check('双链按钮带目标文本', wlButtons.length === 2 && textOf(wlButtons[0]).join('').includes('另一篇笔记'), wlButtons.length ? textOf(wlButtons[0]).join('') : '')
+    check('双链支持 | 显示文字', wlButtons.length === 2 && textOf(wlButtons[1]).join('').includes('显示文字'), wlButtons.length === 2 ? textOf(wlButtons[1]).join('') : '')
+
+    // 点击要真的把目标传出去（而不是渲染成死链接）
+    let clickedTarget = null
+    const wlClickable = renderInline('[[被点的笔记]]', 'k5', { onOpenWikiLink: (name) => { clickedTarget = name } })
+    const wlBtn = flatNodes(wlClickable).find((n) => n.type === 'button')
+    if (wlBtn !== undefined && typeof wlBtn.props.onClick === 'function') wlBtn.props.onClick({ preventDefault() {}, stopPropagation() {} })
+    check('双链点击回传目标名', clickedTarget === '被点的笔记', String(clickedTarget))
+
+    // 普通 markdown 链接不能被双链逻辑吃掉
+    const plainLink = renderInline('[普通链接](https://example.com)', 'k6', {})
+    const plainAnchor = flatNodes(plainLink).find((n) => n.type === 'a')
+    check('普通链接仍是 a 标签', plainAnchor !== undefined && plainAnchor.props.href === 'https://example.com', JSON.stringify(flatNodes(plainLink).map((n) => n.type)))
+
+    // 回收站面板：能渲染，且请求的是 /trash/list
+    check('导出 TrashPane', typeof TrashPane === 'function')
+    let trashRendered = null
+    try {
+      trashRendered = TrashPane({ t: (key) => key, status: { trash: 0 }, onChanged: () => {}, onError: () => {}, showToast: () => {} })
+    } catch (error) {
+      check('回收站面板渲染无异常', false, String(error && error.message))
+    }
+    check('回收站面板渲染无异常', trashRendered !== null)
+    check('回收站面板有恢复与永久删除文案', /trash\.restore/.test(source) && /trash\.purgeOne/.test(source))
+    check('回收站面板请求 /trash/list', /api\('\/trash\/list'\)/.test(source))
+    check('回收站面板请求 /trash/restore', /\/trash\/restore/.test(source))
+    check('回收站面板请求 /trash/purge', /\/trash\/purge/.test(source))
+
+    // 云端：标签增删、分享、新建、知识库、把本地改动推回云端
+    check('云端接上 /cloud/tags-add', /\/cloud\/tags-add/.test(source))
+    check('云端接上 /cloud/tags-delete', /\/cloud\/tags-delete/.test(source))
+    check('云端接上 /cloud/share', /\/cloud\/share/.test(source))
+    check('云端接上 /cloud/create', /\/cloud\/create/.test(source))
+    check('云端接上 /cloud/topics', /\/cloud\/topics/.test(source))
+    check('云端接上 /cloud/topic-notes', /\/cloud\/topic-notes/.test(source))
+    check('本地改动能推回云端 /sync/push', /\/sync\/push/.test(source))
+
+    // 新增的样式类必须都真的存在，否则「加了 UI 但看不见」
+    for (const cls of ['dshgn_topicRow', 'dshgn_topicChip', 'dshgn_tagX', 'dshgn_imgRow', 'dshgn_img', 'dshgn_wikilink', 'dshgn_embed', 'dshgn_embedFile']) {
+      check(`样式 .${cls} 已定义`, source.includes(`.${cls}{`), cls)
+    }
   }
 }
 

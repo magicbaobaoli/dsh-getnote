@@ -17,6 +17,10 @@ import {
   vaultStats,
   listDirs,
   listAssets,
+  listTrash,
+  restoreNote,
+  purgeTrash,
+  parseTrashName,
 } from '../lib/vault.js'
 
 const results = []
@@ -145,6 +149,68 @@ note_url: https://www.biji.com/note/1200000000000000001
 
   const noDir = await listAssets(root, '项目与作品/2026-11-13-没有 asset 目录.md', '')
   check('listAssets: 没有 asset 目录时返回空数组', Array.isArray(noDir) && noDir.length === 0, JSON.stringify(noDir))
+
+  // ── 回收站 ────────────────────────────────────────────────────────────────
+  // 以前删除只进不出：面板上没有任何入口能看见 .trash、更没法恢复。下面这组
+  // 断言盯的就是「删错了还能救回来」这条底线。
+  const trashParsed = parseTrashName('2026-11-15T03-04-05-678Z__生活记录·旧笔记.md')
+  check('parseTrashName: 拆出原名', trashParsed !== null && trashParsed.originalName === '生活记录·旧笔记.md', JSON.stringify(trashParsed))
+  check('parseTrashName: 拆出删除时间', trashParsed !== null && /^2026-11-15T03:04:05\.678Z$/.test(trashParsed.trashedAt), JSON.stringify(trashParsed))
+  // 非约定格式不抛错、也不假装知道删除时间：trashedAt 给 null，originalName 保留原名。
+  const trashOdd = parseTrashName('随便一个名字.md')
+  check('parseTrashName: 非约定格式不炸且时间未知',
+    trashOdd !== null && trashOdd.trashedAt === null && trashOdd.originalName === '随便一个名字.md',
+    JSON.stringify(trashOdd))
+
+  // 注意：`createNote` 传了 content 时标题由正文里的一级标题推出，所以这里让正文
+  // 自己带 `# 待删的笔记`，否则标题会变成第一个小标题。
+  await createNote(root, { dir: '项目与作品', title: '待删的笔记', content: '# 待删的笔记\n\n删掉我\n' })
+  const beforeTrash = await scanVault(root)
+  const trashedRel = beforeTrash.entries.find((e) => e.title === '待删的笔记')
+  check('回收站: 先有一条笔记可删', trashedRel !== undefined, JSON.stringify(beforeTrash.entries.map((e) => e.title)))
+
+  const trashResult = await trashNote(root, trashedRel.path)
+  check('回收站: 删除返回目标路径', trashResult !== null && typeof trashResult.trashedTo === 'string' && trashResult.trashedTo.startsWith('.trash/'), JSON.stringify(trashResult))
+
+  const afterTrash = await scanVault(root)
+  check('回收站: 删掉的笔记不再出现在库里', !afterTrash.entries.some((e) => e.title === '待删的笔记'))
+
+  const trashList = await listTrash(root)
+  check('回收站: listTrash 能看到它', trashList.some((i) => i.title === '待删的笔记'), JSON.stringify(trashList.map((i) => i.title)))
+  check('回收站: listTrash 带上原始文件名', trashList.some((i) => typeof i.originalName === 'string' && i.originalName.length > 0))
+  check('回收站: listTrash 带上大小与时间',
+    trashList.every((i) => typeof i.bytes === 'number' && typeof i.trashedAt === 'string'))
+
+  const target = trashList.find((i) => i.title === '待删的笔记')
+  const restored = await restoreNote(root, target.path, '')
+  check('回收站: 恢复返回落点路径', typeof restored.path === 'string' && restored.path.length > 0, JSON.stringify(restored))
+  const restoredText = await readFile(join(root, restored.path), 'utf8')
+  check('回收站: 恢复后内容原样', restoredText.includes('删掉我'), restoredText.slice(0, 60))
+  check('回收站: 恢复后不在回收站里了', !(await listTrash(root)).some((i) => i.title === '待删的笔记'))
+
+  // 恢复不能覆盖同名文件——为了救一个文件而毁掉另一个说不通。
+  await createNote(root, { dir: '项目与作品', title: '撞名测试', content: '# 撞名测试\n\nA 版本\n' })
+  const toTrash2 = (await scanVault(root)).entries.find((e) => e.title === '撞名测试')
+  const trashed2 = await trashNote(root, toTrash2.path)
+  const parsed2 = parseTrashName(trashed2.trashedTo.split('/').pop())
+  // 再放一个同名文件占位（和恢复目标同一目录，这样才能真的撞上）
+  const occupiedRel = `项目与作品/${parsed2.originalName}`
+  await writeFile(join(root, '项目与作品', parsed2.originalName), 'B 版本\n', 'utf8')
+  const item2 = (await listTrash(root)).find((i) => i.originalName === parsed2.originalName)
+  const restored2 = await restoreNote(root, item2.path, occupiedRel)
+  check('回收站: 撞名时改名而不是覆盖', restored2.path !== occupiedRel, restored2.path)
+  check('回收站: 撞名时占位文件没被改', (await readFile(join(root, occupiedRel), 'utf8')) === 'B 版本\n')
+
+  // 永久删除
+  const trashListBefore = await listTrash(root)
+  check('回收站: 清空前有东西', trashListBefore.length > 0, String(trashListBefore.length))
+  const purged = await purgeTrash(root, trashListBefore[0].path)
+  check('回收站: purgeTrash 单个返回已删列表', Array.isArray(purged.purged) && purged.purged.length === 1, JSON.stringify(purged))
+  check('回收站: 单个清除后少一条', (await listTrash(root)).length === trashListBefore.length - 1)
+
+  const purgeAllResult = await purgeTrash(root)
+  check('回收站: purgeTrash 清空全部', Array.isArray(purgeAllResult.purged) && purgeAllResult.purged.length === trashListBefore.length - 1, JSON.stringify(purgeAllResult))
+  check('回收站: 清空后为空', (await listTrash(root)).length === 0)
 } finally {
   await rm(root, { recursive: true, force: true })
 }
