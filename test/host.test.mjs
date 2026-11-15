@@ -90,13 +90,13 @@ try {
 
   // 2. 指定一个临时库目录
   const vault = await mkdtemp(join(tmpdir(), 'dshgn-vault-'))
-  await mkdir(join(vault, '生活记录'), { recursive: true })
+  await mkdir(join(vault, '随手记'), { recursive: true })
   await writeFile(
-    join(vault, '生活记录', '2026-11-13-示例录音笔记.md'),
+    join(vault, '随手记', '2026-11-13-示例录音笔记.md'),
     '---\ntags: [得到大脑, 私密]\nnote_id: "1200000000000000001"\n归档: 2026-11-13\n---\n\n# 示例录音笔记\n\n第一次录音的感受，关键词 watermelon。\n',
     'utf8',
   )
-  await writeFile(join(vault, '项目与作品'), 'not a dir', 'utf8').catch(() => {})
+  await writeFile(join(vault, '做过的项目'), 'not a dir', 'utf8').catch(() => {})
 
   const setRes = await call('/settings', postJson('/settings', { vaultPath: vault }))
   check('POST /settings 切换库', setRes.status === 200 && setRes.json.effectiveRoot === vault, setRes.json && setRes.json.effectiveRoot)
@@ -109,7 +109,7 @@ try {
   // 4. tree / list
   const treeRes = await call('/tree')
   check('GET /tree 返回条目', treeRes.json.entries.length === 1, `${treeRes.json.entries && treeRes.json.entries.length}`)
-  check('GET /tree 目录树', treeRes.json.tree.children.length === 1 && treeRes.json.tree.children[0].name === '生活记录', JSON.stringify(treeRes.json.tree.children.map((c) => c.name)))
+  check('GET /tree 目录树', treeRes.json.tree.children.length === 1 && treeRes.json.tree.children[0].name === '随手记', JSON.stringify(treeRes.json.tree.children.map((c) => c.name)))
   const listRes = await call('/list?q=watermelon')
   check('GET /list 关键词过滤', listRes.json.total === 1, JSON.stringify(listRes.json.total))
   const listTag = await call('/list?tag=私密')
@@ -118,14 +118,14 @@ try {
   check('GET /list 无匹配', listNone.json.total === 0, String(listNone.json.total))
 
   // 5. read
-  const readRes = await call('/read?path=' + encodeURIComponent('生活记录/2026-11-13-示例录音笔记.md'))
+  const readRes = await call('/read?path=' + encodeURIComponent('随手记/2026-11-13-示例录音笔记.md'))
   check('GET /read 读到正文', readRes.json.content.includes('# 示例录音笔记'), `${readRes.json.bytes} bytes`)
   check('GET /read 附件 frontmatter', readRes.json.frontmatter.note_id === '1200000000000000001', String(readRes.json.frontmatter.note_id))
 
   // 5b. 本地附件（录音）直出。
   //     这组断言护的是一整条链路：vault 层按 note_id 认领附件 → /read 带回去 →
   //     /asset 支持 Range。缺任何一环，面板上「本地录音」播放器就是块死按钮。
-  const assetDir = join(vault, '生活记录', 'asset')
+  const assetDir = join(vault, '随手记', 'asset')
   await mkdir(assetDir, { recursive: true })
   // 附件名故意用「云端标题 + note_id」——与真实库里 Obsidian 端插件留下的命名一致，
   // 而本地文件名是「2026-11-13-示例录音笔记」，两者主干并不相等，
@@ -136,7 +136,7 @@ try {
   await writeFile(join(assetDir, '云端示例录音笔记_1200000000000000001_transcript.md'), '# 转写\n', 'utf8')
   await writeFile(join(assetDir, '别的笔记_9999999999999999999_audio.mp3'), Buffer.alloc(10), 'utf8')
 
-  const readWithAssets = await call('/read?path=' + encodeURIComponent('生活记录/2026-11-13-示例录音笔记.md'))
+  const readWithAssets = await call('/read?path=' + encodeURIComponent('随手记/2026-11-13-示例录音笔记.md'))
   check('GET /read 带回 assets', Array.isArray(readWithAssets.json.assets) && readWithAssets.json.assets.length === 2, JSON.stringify((readWithAssets.json.assets || []).map((a) => a.name)))
   check(
     'GET /read 按 note_id 认领附件（标题不同也能认）',
@@ -144,7 +144,7 @@ try {
     JSON.stringify((readWithAssets.json.assets || []).map((a) => a.name)),
   )
 
-  const assetPath = `生活记录/asset/${audioName}`
+  const assetPath = `随手记/asset/${audioName}`
   const assetRes = await call('/asset?path=' + encodeURIComponent(assetPath))
   check('GET /asset 200', assetRes.status === 200, `status=${assetRes.status}`)
   check('GET /asset content-type=audio/mpeg', (assetRes.contentType || '').startsWith('audio/mpeg'), assetRes.contentType)
@@ -176,15 +176,15 @@ try {
   check('POST /asset → 405', assetPostRes.status === 405, `status=${assetPostRes.status}`)
 
   // 6. save（写入生效 + .bak）
-  const savedRes = await call('/save', postJson('/save', { path: '生活记录/2026-11-13-示例录音笔记.md', content: '# 改过了\n\n新内容。\n' }))
+  const savedRes = await call('/save', postJson('/save', { path: '随手记/2026-11-13-示例录音笔记.md', content: '# 改过了\n\n新内容。\n' }))
   check('POST /save 成功', savedRes.status === 200 && savedRes.json.ok === true, JSON.stringify(savedRes.json))
-  const onDisk = await readFile(join(vault, '生活记录', '2026-11-13-示例录音笔记.md'), 'utf8')
+  const onDisk = await readFile(join(vault, '随手记', '2026-11-13-示例录音笔记.md'), 'utf8')
   check('POST /save 落盘', onDisk.includes('# 改过了'))
-  const bakExists = await stat(join(vault, '生活记录', '2026-11-13-示例录音笔记.md.bak')).then(() => true, () => false)
+  const bakExists = await stat(join(vault, '随手记', '2026-11-13-示例录音笔记.md.bak')).then(() => true, () => false)
   check('POST /save 留 .bak', bakExists)
 
   // 7. create
-  const createRes = await call('/create', postJson('/create', { dir: '生活记录', title: '新笔记', content: '' }))
+  const createRes = await call('/create', postJson('/create', { dir: '随手记', title: '新笔记', content: '' }))
   check('POST /create 成功', createRes.status === 200 && /^\d{4}-\d{2}-\d{2}-新笔记\.md$/.test(createRes.json.path.split('/').pop()), createRes.json.path)
 
   // 8. 搜索（第 6 步已把正文改写成「新内容。」，这里搜改写后的词——

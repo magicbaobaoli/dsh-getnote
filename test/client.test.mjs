@@ -382,7 +382,7 @@ if (internals) {
     // 本地附件（用户自己库里的录音）不走 CDN 代理：url 已经是本站路径，原样用。
     // 若这里被错误地再包一层 /getnote/audio?url=...，播放器会请求一个「代理代理」
     // 的地址，看起来像在转圈其实永远放不出来。
-    const localTrack = { url: '/getnote/asset?path=' + encodeURIComponent('生活记录/asset/x_1_audio.mp3'), duration: 0, kind: 'local', title: 'x_1_audio.mp3' }
+    const localTrack = { url: '/getnote/asset?path=' + encodeURIComponent('随手记/asset/x_1_audio.mp3'), duration: 0, kind: 'local', title: 'x_1_audio.mp3' }
     let localPlayer = null
     try {
       localPlayer = AudioPlayer({ t: tKey, track: localTrack })
@@ -749,7 +749,7 @@ if (internals) {
 
     // 图片附件以前完全被丢掉：listAssets 明明返回 kind:'image'，客户端只 filter audio。
     check('导出 renderEmbed', typeof renderEmbed === 'function')
-    const imgOptions = { assets: [{ kind: 'image', name: '照片.png', path: '生活记录/asset/照片.png' }] }
+    const imgOptions = { assets: [{ kind: 'image', name: '照片.png', path: '随手记/asset/照片.png' }] }
     const imgEl = renderEmbed('照片.png', 'k1', imgOptions)
     const imgFlat = imgEl === null ? [] : flatNodes(imgEl)
     const imgNode = imgFlat.find((n) => n.type === 'img')

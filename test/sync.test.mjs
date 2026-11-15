@@ -121,12 +121,12 @@ function fakeClient(notes) {
 
 {
   const root = await freshRoot()
-  const note = cloudNote({ noteId: '2001', title: '课程笔记', topics: [{ id: 'J8xGwOAJ', name: '学业与课程' }] })
+  const note = cloudNote({ noteId: '2001', title: '课程笔记', topics: [{ id: 'TOPICDEMO01', name: '课程与笔记' }] })
   const result = await runSync({ client: fakeClient([note]), root, state: { notes: {} }, full: false, log: () => {} })
   const rel = Object.values(result.notes)[0].path
-  ok('按知识库分目录', rel === '学业与课程/' + rel.split('/').pop(), rel)
+  ok('按知识库分目录', rel === '课程与笔记/' + rel.split('/').pop(), rel)
   const text = await readLocal(root, rel)
-  ok('frontmatter 记知识库', text !== null && text.includes('知识库: 学业与课程'))
+  ok('frontmatter 记知识库', text !== null && text.includes('知识库: 课程与笔记'))
 }
 
 // ── 3. 第二轮无变化：什么都不写 ─────────────────────────────────────────────
@@ -182,16 +182,16 @@ function fakeClient(notes) {
     '',
     '这是我自己整理的内容，不许覆盖我。',
   ].join('\n')
-  await writeLocal(root, '生活记录/2026-11-13-我手写的标题.md', handwritten)
+  await writeLocal(root, '随手记/2026-11-13-我手写的标题.md', handwritten)
 
   const note = cloudNote({ noteId: '5001', title: '我手写的标题', content: '云端那份完全不同的正文' })
   const result = await runSync({ client: fakeClient([note]), root, state: { notes: {} }, full: false, log: () => {} })
 
-  const text = await readLocal(root, '生活记录/2026-11-13-我手写的标题.md')
+  const text = await readLocal(root, '随手记/2026-11-13-我手写的标题.md')
   ok('手写归档没有被覆盖', text === handwritten, text === null ? '文件消失' : '')
   ok('adopted 计数为 1', result.adopted === 1, `adopted=${result.adopted}`)
   ok('adopt 后 state 带 adopted 标记', Object.values(result.notes)[0].adopted === true)
-  ok('adopt 时不留 .bak', !(await exists(root, '生活记录/2026-11-13-我手写的标题.md.bak')))
+  ok('adopt 时不留 .bak', !(await exists(root, '随手记/2026-11-13-我手写的标题.md.bak')))
   ok('手写的原始字段还在', text !== null && text.includes('设备: GSDEMO0000001'))
 }
 
@@ -414,7 +414,7 @@ function fakeClient(notes) {
       moments: [{ startMs: 0, endMs: 15000, text: '开场白' }],
       todos: [{ text: '记得回消息', completed: true }],
     }),
-    topicName: '生活记录',
+    topicName: '随手记',
   })
   ok('渲染含标题', rendered.includes('# 渲染测试'))
   ok('渲染含音频链接', rendered.includes('## 音频') && rendered.includes('mediacdn.umiwi.com'))

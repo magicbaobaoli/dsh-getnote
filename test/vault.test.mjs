@@ -36,7 +36,7 @@ try {
 tags: [得到大脑, 录音卡, 私密]
 note_id: "1200000000000000001"
 note_url: https://www.biji.com/note/1200000000000000001
-知识库: 生活记录
+知识库: 随手记
 归档: 2026-11-13
 ---
 
@@ -47,14 +47,14 @@ note_url: https://www.biji.com/note/1200000000000000001
   const fm = parseFrontmatter(sample)
   check('frontmatter: tags 数组', JSON.stringify(fm.data.tags) === JSON.stringify(['得到大脑', '录音卡', '私密']), JSON.stringify(fm.data.tags))
   check('frontmatter: note_id 引号剥除', fm.data.note_id === '1200000000000000001', String(fm.data.note_id))
-  check('frontmatter: 中文键', fm.data['知识库'] === '生活记录', String(fm.data['知识库']))
+  check('frontmatter: 中文键', fm.data['知识库'] === '随手记', String(fm.data['知识库']))
   check('frontmatter: 正文剥离', fm.body.trim().startsWith('# 示例录音笔记'), JSON.stringify(fm.body.slice(0, 20)))
 
   // 2. 写入 + 扫描
-  await mkdir(join(root, '生活记录'), { recursive: true })
-  await writeFile(join(root, '生活记录', '2026-11-13-示例录音笔记.md'), sample, 'utf8')
-  await mkdir(join(root, '项目与作品'), { recursive: true })
-  await writeFile(join(root, '项目与作品', '2026-10-01-某个项目.md'), '# 某个项目\n\n项目正文，含关键词 kumquat。\n', 'utf8')
+  await mkdir(join(root, '随手记'), { recursive: true })
+  await writeFile(join(root, '随手记', '2026-11-13-示例录音笔记.md'), sample, 'utf8')
+  await mkdir(join(root, '做过的项目'), { recursive: true })
+  await writeFile(join(root, '做过的项目', '2026-10-01-某个项目.md'), '# 某个项目\n\n项目正文，含关键词 kumquat。\n', 'utf8')
 
   const scan = await scanVault(root)
   check('scanVault: 找到 2 篇', scan.entries.length === 2, `${scan.entries.length}`)
@@ -70,7 +70,7 @@ note_url: https://www.biji.com/note/1200000000000000001
   check('buildTree: 计数', tree.count === 2, String(tree.count))
 
   // 4. 读
-  const note = await readNote(root, '生活记录/2026-11-13-示例录音笔记.md')
+  const note = await readNote(root, '随手记/2026-11-13-示例录音笔记.md')
   check('readNote: 内容完整', note.content.includes('# 示例录音笔记'), `${note.bytes} bytes`)
   check('readNote: frontmatter 附加', note.frontmatter['归档'] === '2026-11-13', String(note.frontmatter['归档']))
 
@@ -84,15 +84,15 @@ note_url: https://www.biji.com/note/1200000000000000001
   check('readNote: 拒绝 ../ 逃逸', escaped)
 
   // 6. 写（保留 .bak）
-  await writeNote(root, '生活记录/2026-11-13-示例录音笔记.md', sample.replace('正文第一段。', '改过的正文。'))
-  const bak = await readFile(join(root, '生活记录', '2026-11-13-示例录音笔记.md.bak'), 'utf8')
+  await writeNote(root, '随手记/2026-11-13-示例录音笔记.md', sample.replace('正文第一段。', '改过的正文。'))
+  const bak = await readFile(join(root, '随手记', '2026-11-13-示例录音笔记.md.bak'), 'utf8')
   check('writeNote: 留 .bak', bak.includes('正文第一段。'), `${bak.length} chars`)
-  const after = await readNote(root, '生活记录/2026-11-13-示例录音笔记.md')
+  const after = await readNote(root, '随手记/2026-11-13-示例录音笔记.md')
   check('writeNote: 新内容生效', after.content.includes('改过的正文。'))
 
   // 7. 新建：同名不覆盖
-  const created1 = await createNote(root, { dir: '项目与作品', title: '同名测试', content: '# 一\n' })
-  const created2 = await createNote(root, { dir: '项目与作品', title: '同名测试', content: '# 二\n' })
+  const created1 = await createNote(root, { dir: '做过的项目', title: '同名测试', content: '# 一\n' })
+  const created2 = await createNote(root, { dir: '做过的项目', title: '同名测试', content: '# 二\n' })
   check('createNote: 首篇命名带日期', /^\d{4}-\d{2}-\d{2}-同名测试\.md$/.test(created1.path.split('/').pop()), created1.path)
   check('createNote: 冲突追加 -2', created2.path.includes('-2.md'), created2.path)
   const one = await readNote(root, created1.path)
@@ -114,7 +114,7 @@ note_url: https://www.biji.com/note/1200000000000000001
   const stats = await vaultStats(root, scan2.entries)
   check('vaultStats: 计数/体积', stats.notes === scan2.entries.length && stats.bytes > 0, JSON.stringify(stats))
   const dirs = listDirs(scan2.entries)
-  check('listDirs: 含根与两个目录', dirs.includes('') && dirs.includes('生活记录') && dirs.includes('项目与作品'), JSON.stringify(dirs))
+  check('listDirs: 含根与两个目录', dirs.includes('') && dirs.includes('随手记') && dirs.includes('做过的项目'), JSON.stringify(dirs))
 
   // 11. 中文与非法字符文件名
   const weird = await createNote(root, { dir: '', title: 'a/b:c*d?e"f<g>h|i', content: 'x' })
@@ -124,14 +124,14 @@ note_url: https://www.biji.com/note/1200000000000000001
   //     真实库里的命名是 Obsidian 端插件留下的「<云端标题>_<note_id>_audio.mp3」，
   //     而本地文件名是「YYYY-MM-DD-<本地标题>」，两边标题实测并不相同，所以
   //     只靠文件名主干是认不出来的，必须靠 note_id。
-  const assetDir = join(root, '生活记录', 'asset')
+  const assetDir = join(root, '随手记', 'asset')
   await mkdir(assetDir, { recursive: true })
   await writeFile(join(assetDir, '云端标题_1200000000000000001_audio.mp3'), Buffer.alloc(64, 1))
   await writeFile(join(assetDir, '云端标题_1200000000000000001_transcript.md'), '# 转写\n', 'utf8')
   await writeFile(join(assetDir, '别的笔记_9999999999999999999_audio.mp3'), Buffer.alloc(8, 2))
   await writeFile(join(assetDir, '云端标题_1200000000000000001_audio.mp3.bak'), Buffer.alloc(8, 3))
 
-  const assetsById = await listAssets(root, '生活记录/2026-11-13-本地标题.md', '1200000000000000001')
+  const assetsById = await listAssets(root, '随手记/2026-11-13-本地标题.md', '1200000000000000001')
   check('listAssets: 靠 note_id 认领附件', assetsById.length === 2, JSON.stringify(assetsById.map((a) => a.name)))
   check(
     'listAssets: 分出 audio / transcript',
@@ -141,20 +141,20 @@ note_url: https://www.biji.com/note/1200000000000000001
   check('listAssets: 跳过 .bak', !assetsById.some((a) => a.name.endsWith('.bak')), JSON.stringify(assetsById.map((a) => a.name)))
   check('listAssets: 不认领别人的附件', !assetsById.some((a) => a.name.includes('9999999999999999999')), JSON.stringify(assetsById.map((a) => a.name)))
 
-  const assetsByStem = await listAssets(root, '生活记录/2026-11-13-云端标题.md', '')
+  const assetsByStem = await listAssets(root, '随手记/2026-11-13-云端标题.md', '')
   check('listAssets: 没有 note_id 时靠去日期前缀的主干认领', assetsByStem.length === 2, JSON.stringify(assetsByStem.map((a) => a.name)))
 
-  const noAssets = await listAssets(root, '生活记录/2026-11-13-毫无关系的笔记.md', '')
+  const noAssets = await listAssets(root, '随手记/2026-11-13-毫无关系的笔记.md', '')
   check('listAssets: 没附件时返回空数组而不是抛错', Array.isArray(noAssets) && noAssets.length === 0, JSON.stringify(noAssets))
 
-  const noDir = await listAssets(root, '项目与作品/2026-11-13-没有 asset 目录.md', '')
+  const noDir = await listAssets(root, '做过的项目/2026-11-13-没有 asset 目录.md', '')
   check('listAssets: 没有 asset 目录时返回空数组', Array.isArray(noDir) && noDir.length === 0, JSON.stringify(noDir))
 
   // ── 回收站 ────────────────────────────────────────────────────────────────
   // 以前删除只进不出：面板上没有任何入口能看见 .trash、更没法恢复。下面这组
   // 断言盯的就是「删错了还能救回来」这条底线。
-  const trashParsed = parseTrashName('2026-11-15T03-04-05-678Z__生活记录·旧笔记.md')
-  check('parseTrashName: 拆出原名', trashParsed !== null && trashParsed.originalName === '生活记录·旧笔记.md', JSON.stringify(trashParsed))
+  const trashParsed = parseTrashName('2026-11-15T03-04-05-678Z__随手记·旧笔记.md')
+  check('parseTrashName: 拆出原名', trashParsed !== null && trashParsed.originalName === '随手记·旧笔记.md', JSON.stringify(trashParsed))
   check('parseTrashName: 拆出删除时间', trashParsed !== null && /^2026-11-15T03:04:05\.678Z$/.test(trashParsed.trashedAt), JSON.stringify(trashParsed))
   // 非约定格式不抛错、也不假装知道删除时间：trashedAt 给 null，originalName 保留原名。
   const trashOdd = parseTrashName('随便一个名字.md')
@@ -164,7 +164,7 @@ note_url: https://www.biji.com/note/1200000000000000001
 
   // 注意：`createNote` 传了 content 时标题由正文里的一级标题推出，所以这里让正文
   // 自己带 `# 待删的笔记`，否则标题会变成第一个小标题。
-  await createNote(root, { dir: '项目与作品', title: '待删的笔记', content: '# 待删的笔记\n\n删掉我\n' })
+  await createNote(root, { dir: '做过的项目', title: '待删的笔记', content: '# 待删的笔记\n\n删掉我\n' })
   const beforeTrash = await scanVault(root)
   const trashedRel = beforeTrash.entries.find((e) => e.title === '待删的笔记')
   check('回收站: 先有一条笔记可删', trashedRel !== undefined, JSON.stringify(beforeTrash.entries.map((e) => e.title)))
@@ -189,13 +189,13 @@ note_url: https://www.biji.com/note/1200000000000000001
   check('回收站: 恢复后不在回收站里了', !(await listTrash(root)).some((i) => i.title === '待删的笔记'))
 
   // 恢复不能覆盖同名文件——为了救一个文件而毁掉另一个说不通。
-  await createNote(root, { dir: '项目与作品', title: '撞名测试', content: '# 撞名测试\n\nA 版本\n' })
+  await createNote(root, { dir: '做过的项目', title: '撞名测试', content: '# 撞名测试\n\nA 版本\n' })
   const toTrash2 = (await scanVault(root)).entries.find((e) => e.title === '撞名测试')
   const trashed2 = await trashNote(root, toTrash2.path)
   const parsed2 = parseTrashName(trashed2.trashedTo.split('/').pop())
   // 再放一个同名文件占位（和恢复目标同一目录，这样才能真的撞上）
-  const occupiedRel = `项目与作品/${parsed2.originalName}`
-  await writeFile(join(root, '项目与作品', parsed2.originalName), 'B 版本\n', 'utf8')
+  const occupiedRel = `做过的项目/${parsed2.originalName}`
+  await writeFile(join(root, '做过的项目', parsed2.originalName), 'B 版本\n', 'utf8')
   const item2 = (await listTrash(root)).find((i) => i.originalName === parsed2.originalName)
   const restored2 = await restoreNote(root, item2.path, occupiedRel)
   check('回收站: 撞名时改名而不是覆盖', restored2.path !== occupiedRel, restored2.path)
