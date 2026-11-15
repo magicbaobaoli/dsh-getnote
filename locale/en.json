@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Get笔记",
+    "description": "Bring Get笔记 (biji.com) into DSH as one sidebar entry and a single panel. Work directly on cloud notes (read, rewrite, delete, tag, semantic search, share links, play the original recording) and mirror everything into local Markdown — directory tree, tag cloud, full-text search, editing and creating all work offline, and already-synced notes stay readable and writable after any membership ends. Two cloud channels, pick either: one-click OAuth sign-in, or an API key from the openapi.biji.com console pasted into settings; a rejected key falls back to the sign-in channel automatically. Auto-sync is off by default and, once enabled, pulls new notes on schedule while DSH runs. Writes always favour your edits: notes you wrote by hand are never overwritten, newer cloud versions are only saved aside under .conflicts."
+  }
+}

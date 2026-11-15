@@ -1,0 +1,34 @@
+# 依赖与构建产物
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# DSH 本地运行时数据（绝不能提交：里面有凭证）
+.dsh/
+**/dsh-getnote.json
+**/dsh-getnote/auth.json
+**/dsh-getnote/cloud.json
+**/dsh-getnote/state.json
+vault/
+.conflicts/
+.trash/
+
+# 编辑器与系统噪音
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 日志与临时文件
+*.log
+npm-debug.log*
+yarn-error.log*
+*.tmp
+*.bak
+_css.txt
+tmp-*.mjs
+
+# 本机的插件安装产物
+*.tgz

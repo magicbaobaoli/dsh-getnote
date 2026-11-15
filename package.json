@@ -1,0 +1,66 @@
+{
+  "name": "dsh-getnote",
+  "version": "0.1.0",
+  "description": "把「得到大脑（Get笔记）」搬进 DeepSeek Harness：本地优先的 Markdown 笔记库面板，左侧栏入口 + 中央面板，浏览/搜索/编辑/新建/删除全部离线可用；云端同步是一次性可选的增强（OAuth 登录后拉起全部笔记落成本地 Markdown）。Local-first Get笔记 (biji.com) vault panel for DeepSeek Harness.",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "locale",
+    "icon.svg",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "dsh": ">=0.2.0-rc.1 <0.3.0-0",
+    "node": "^22.19 || >=24"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-theme",
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-connection"
+      ]
+    }
+  },
+  "keywords": [
+    "deepseek-harness",
+    "deepseek-harness-plugin",
+    "dsh",
+    "dsh-plugin",
+    "getnote",
+    "biji",
+    "得到大脑",
+    "notes",
+    "markdown",
+    "local-first",
+    "second-brain"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/magicbaobaoli/dsh-getnote.git"
+  },
+  "homepage": "https://github.com/magicbaobaoli/dsh-getnote#readme",
+  "bugs": {
+    "url": "https://github.com/magicbaobaoli/dsh-getnote/issues"
+  },
+  "author": "magicbaobaoli",
+  "private": false
+}

@@ -1,0 +1,13 @@
+# dsh-getnote 的组合层（bundle layer）。
+#
+# 本文件把插件行插入组合树。行字段含义：
+#   - id：组合内唯一的行 id，profile/用户的 patch 层用它覆盖本行；
+#   - name：Node 模块标识符，即 npm 包名，启动器据此解析到本包的 host 入口。
+- insert:
+    - id: dsh-getnote
+      name: dsh-getnote
+      config:
+        # 本地笔记库根目录（绝对路径；支持 ~ 开头）。留空 = $DSH_HOME/dsh-getnote/vault。
+        # 想直接读你现有的 Obsidian 归档，就填：
+        #   C:/Users/you/Documents/得到大脑归档
+        vaultPath: ""
