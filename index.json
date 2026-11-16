@@ -24,28 +24,19 @@
       "metadata": {
         "category": "notes",
         "labels": [
-          {
-            "en": "Notes",
-            "zh": "笔记"
-          },
-          {
-            "en": "Local-first",
-            "zh": "本地优先"
-          },
-          {
-            "en": "Markdown",
-            "zh": "Markdown"
-          }
+          "Notes",
+          "Local-first",
+          "Markdown"
         ]
       },
       "versions": [
         {
           "version": "0.6.2",
-          "publishTimestamp": 1794801428,
+          "publishTimestamp": 1794802073,
           "source": {
             "type": "git",
             "url": "https://github.com/magicbaobaoli/dsh-getnote",
-            "commit": "2596a2cc2c88be46e86090748eb4015a90a81268"
+            "commit": "62ad6424e29722923161e062ee1a2edfe69a78fa"
           },
           "engines": {
             "dsh": ">=0.2.0-rc.1 <0.3.0-0"

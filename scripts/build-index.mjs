@@ -81,11 +81,10 @@ const index = {
       repository: { url: repo },
       metadata: {
         category: 'notes',
-        labels: [
-          { en: 'Notes', zh: '笔记' },
-          { en: 'Local-first', zh: '本地优先' },
-          { en: 'Markdown', zh: 'Markdown' },
-        ],
+        // labels 是纯字符串数组，不是 {en, zh} 对象：市场的校验器对每一项
+        // 要求「非空白字符串」，写成对象会被整份索引拒掉
+        // （$.plugins[0].metadata.labels[0] must be a string）。
+        labels: ['Notes', 'Local-first', 'Markdown'],
       },
       versions: [
         {
