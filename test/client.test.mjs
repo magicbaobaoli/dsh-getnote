@@ -1171,7 +1171,16 @@ check('排序按钮循环切换三种模式', /const nextMode = mode === 'time' 
 check('目录行绑定了右键菜单', /onContextMenu: \(event\) => openMenu\(event, 'dir', node\.path\)/.test(source))
 check('标签也绑定了右键菜单', /onContextMenu: \(event\) => openMenu\(event, 'tag', tag\)/.test(source))
 check('右键菜单阻止了浏览器默认菜单', /event\.preventDefault\(\)[\s\S]{0,80}setMenu\(/.test(source))
-check('右键菜单用 fixed 定位不被裁切', /\.dshgn_ctxMenu\{[\s\S]{0,120}position:fixed/.test(source))
+check('删除/取消是行内按钮，不再是浮层', /const rowMenu = \(\) => \{/.test(source))
+check('行内菜单里同时有删除与取消', /dshgn_rowBtn dshgn_rowBtnDanger[\s\S]{0,700}tree\.menuCancel/.test(source))
+check('行内菜单的取消只关掉菜单', /title: t\('tree\.menuCancel'\)[\s\S]{0,90}onClick: \(\) => setMenu\(null\)/.test(source))
+check('旧的 fixed 浮层已删除', !/\.dshgn_ctxMenu\{/.test(source))
+check('目录与标签都接上行内菜单', (source.match(/rowMenu\(\)/g) || []).length >= 2)
+check('标签项外包 span，避免 button 套 button', /className: 'dshgn_tagWrap'/.test(source))
+check('方向键/右键不再记鼠标坐标', !/setMenu\(\{ kind, name, x:/.test(source))
+check('入场动画不再从 opacity:0 起（否则深色栏白闪）', !/@keyframes dshgn_tabIn\{[^}]*opacity/.test(source))
+check('入场动画仍是横向滑入', /@keyframes dshgn_tabIn\{\s*from\{transform:translateX\(-16px\)\}/.test(source))
+check('入场动画不保留结束态，避免留 transform 影响 fixed 定位', !/animation:dshgn_tabIn[^}]*both/.test(source))
 check('点空白处或滚动会关闭菜单', /window\.addEventListener\('scroll', close, true\)/.test(source))
 check('删除前有二次确认弹窗', /className: 'dshgn_modalMask'/.test(source) && /className: 'dshgn_modal'/.test(source))
 check('确认文案带 {name} 占位并替换', /\.replace\(\s*'\{name\}',\s*confirm\.name/.test(source))
@@ -1229,6 +1238,83 @@ for (const name of ['ConflictPane', 'ArchiveCard', 'SkeletonPane']) {
     check(`${name} 渲染无异常`, ok, detail)
   }
 }
+
+// ── 第十一批：三语（zh/en/nl）+ 语言切换（m11946）──────────────────────────
+{
+  const dicts = internals.LEX
+  const locales = Object.keys(dicts)
+  check('LEX 有三本字典', locales.length === 3 && locales.includes('zh') && locales.includes('en') && locales.includes('nl'))
+  const zhKeys = Object.keys(dicts.zh).sort()
+  for (const code of ['en', 'nl']) {
+    const keys = Object.keys(dicts[code]).sort()
+    const missing = zhKeys.filter((k) => keys.indexOf(k) < 0)
+    const extra = keys.filter((k) => zhKeys.indexOf(k) < 0)
+    check(`${code} 字典与中文键完全一致`, missing.length === 0 && extra.length === 0, `缺 ${missing.join(',')} 多 ${extra.join(',')}`)
+  }
+  // 荷兰语的确不是英文照抄：抽查几条必须不同
+  check('荷兰语不是英文的复制品', dicts.nl['tab.notes'] !== dicts.en['tab.notes'] && dicts.nl['tab.notes'] === 'Notities')
+  check('三本字典都有关键入口文案', ['zh', 'en', 'nl'].every((c) => typeof dicts[c]['panel.title'] === 'string' && dicts[c]['panel.title'] !== ''))
+}
+
+check('语言状态是模块级变量（t 是模块闭包）', /let uiLocale = null/.test(source))
+check(
+  'setUiLocale 只接受三种值',
+  /function setUiLocale\(value\) \{[\s\S]{0,200}value === 'zh' \|\| value === 'en' \|\| value === 'nl'/.test(source),
+)
+check('非法语言值一律当自动', /function setUiLocale[\s\S]{0,300}: null/.test(source))
+check('显式语言优先于宿主 locale', /if \(uiLocale !== null\) \{[\s\S]{0,200}LEX\[uiLocale\]/.test(source))
+check('取不到才回落中文', /return LEX\.zh\[key\] \|\| key/.test(source))
+check('导出了 setUiLocale / activeUiLocale', typeof internals.setUiLocale === 'function' && typeof internals.activeUiLocale === 'function')
+{
+  const before = internals.activeUiLocale()
+  internals.setUiLocale('nl')
+  check('setUiLocale 生效', internals.activeUiLocale() === 'nl')
+  internals.setUiLocale('de')
+  check('不支持的语言回落到自动', internals.activeUiLocale() === null)
+  internals.setUiLocale(before)
+}
+check('GetnotePage 有 locale state', /const \[locale, setLocale\] = React\.useState\(/.test(source))
+check('t 跟着 locale 重算', /React\.useMemo\(\(\) => makeT\(\), \[locale\]\)/.test(source))
+check('status 回来后以 host 的语言为准', /if \('uiLocale' in statusJson\) setLocale\(statusJson\.uiLocale \|\| null\)/.test(source))
+check('设置页拿到 locale 与 setter', /onLocaleChange: setLocale/.test(source))
+check('设置页解构了 locale', /const \{ t, status, onSaved, onError, onThemePreview, showToast, locale, onLocaleChange \} = props/.test(source))
+check('设置了 LanguageCard', /h\(LanguageCard, \{ t, locale, onSaved, onError, onLocaleChange \}\)/.test(source))
+check('语言卡排在主题色之后、备份之前', /h\(ThemeCard[\s\S]{0,400}h\(LanguageCard[\s\S]{0,400}h\(ArchiveCard/.test(source))
+check('语言卡把 uiLocale 发给 host', /JSON\.stringify\(\{ uiLocale: next \}\)/.test(source))
+check('选完立刻切本地语言（不等刷新）', /onLocaleChange\(next\)[\s\S]{0,120}await onSaved/.test(source))
+check('语言胶囊可折行（Nederlands 比中文长）', /\.dshgn_langRow\{[^}]*flex-wrap:wrap/.test(source))
+check('导出了 LanguageCard', typeof internals.LanguageCard === 'function')
+{
+  const { LanguageCard } = internals
+  const nodes = []
+  const walk = (node) => {
+    if (node === null || node === undefined || typeof node !== 'object') return
+    if (Array.isArray(node)) { node.forEach(walk); return }
+    nodes.push(node)
+    if (node.children) walk(node.children)
+    if (node.props && node.props.children) walk(node.props.children)
+  }
+  let out = null
+  let err = ''
+  try { out = LanguageCard({ t: (k) => k, locale: 'nl', onSaved: () => {}, onError: () => {}, onLocaleChange: () => {} }) } catch (e) { err = e.message }
+  check('LanguageCard 渲染无异常', err === '', err)
+  walk(out)
+  const chipTexts = nodes.filter((n) => n.props && typeof n.props.className === 'string' && n.props.className.indexOf('dshgn_chip') >= 0)
+  check('语言卡有四个选项（自动/中/英/荷）', chipTexts.length === 4, `实际 ${chipTexts.length}`)
+  const onChips = nodes.filter((n) => n.props && typeof n.props.className === 'string' && n.props.className.indexOf('dshgn_chipOn') >= 0)
+  check('当前语言那一项被标为选中', onChips.length === 1)
+  check('选项里有 Nederlands', nodes.some((n) => n.children === 'Nederlands' || (n.props && n.props.children === 'Nederlands')))
+}
+
+// ── 第十一批：同一条再点一次收起（m11946）──────────────────────────────────
+check('openNote 支持 toggle', /const openNote = React\.useCallback\([\s\S]{0,400}async \(path, toggle = false\)/.test(source))
+check('toggle 命中同一条就清空', /if \(toggle && current !== null && current\.path === path\) \{[\s\S]{0,160}setCurrent\(null\)/.test(source))
+check('openNote 依赖 current（否则永远判成没选中）', /setCurrent\(null\)[\s\S]{0,200}\},\n        \[current\],/.test(source))
+check('笔记卡点击传 toggle=true', /void openNote\(entry\.path, true\)/.test(source))
+check('内部调用（新建/保存/双链）仍是不收起', !/void openNote\(created\.path, true\)/.test(source) && !/void openNote\(target2\.path, true\)/.test(source))
+check('openCloudNote 支持 toggle', /async \(note, toggle = false\)/.test(source))
+check('云端 toggle 命中同一条就收起', /if \(toggle && selected !== null && selected\.noteId === note\.noteId\)/.test(source))
+check('云端卡片点击传 toggle=true', /void openCloudNote\(note, true\)/.test(source))
 
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)

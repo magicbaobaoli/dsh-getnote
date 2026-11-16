@@ -41,11 +41,11 @@
       "versions": [
         {
           "version": "0.6.0",
-          "publishTimestamp": 1794793718,
+          "publishTimestamp": 1794793641,
           "source": {
             "type": "git",
             "url": "https://github.com/magicbaobaoli/dsh-getnote",
-            "commit": "7098cdb82b57c2a51d656206cb4354fd265b1dc3"
+            "commit": "3df61e0ab3e7c397589be95b9e4acfcd82b61c81"
           },
           "engines": {
             "dsh": ">=0.2.0-rc.1 <0.3.0-0"

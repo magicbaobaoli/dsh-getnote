@@ -1,6 +1,6 @@
 {
   "name": "dsh-getnote",
-  "version": "0.6.0",
+  "version": "0.6.2",
   "description": "把「得到大脑（Get笔记）」搬进 DeepSeek Harness：本地优先的 Markdown 笔记库面板，左侧栏入口 + 中央面板，浏览/搜索/编辑/新建/删除全部离线可用；云端同步是一次性可选的增强（OAuth 登录后拉起全部笔记落成本地 Markdown）。Local-first Get笔记 (biji.com) vault panel for DeepSeek Harness.",
   "type": "module",
   "main": "lib/index.js",

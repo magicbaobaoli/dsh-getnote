@@ -490,6 +490,36 @@ try {
   check('主题色：保存时不动库路径', themeKeep.json.vaultRoot === vault, JSON.stringify(themeKeep.json.vaultRoot))
   check('主题色：保存时不动自动同步设置', typeof themeKeep.json.autoSync === 'boolean')
 
+  // ── 语言（uiLocale）：host 是唯一真相，null = 自动 ──────────────────────────
+  const localeDefault = await call('/status')
+  check('语言：默认是 null（自动跟随）', localeDefault.json.uiLocale === null, JSON.stringify(localeDefault.json.uiLocale))
+
+  const postLocale = async (value) =>
+    call('/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ uiLocale: value }),
+    })
+
+  const localeNl = await postLocale('nl')
+  check('语言：能存荷兰语', localeNl.status === 200 && localeNl.json.uiLocale === 'nl', JSON.stringify(localeNl.json.uiLocale))
+  const localeAfterNl = await call('/status')
+  check('语言：写进 status 供面板取用', localeAfterNl.json.uiLocale === 'nl', JSON.stringify(localeAfterNl.json.uiLocale))
+
+  const localeUpper = await postLocale('NL-nl')
+  check('语言：大小写与地区码都归一', localeUpper.json.uiLocale === 'nl', JSON.stringify(localeUpper.json.uiLocale))
+
+  const localeBad = await postLocale('de')
+  check('语言：不支持的语言回落自动而不是存下来', localeBad.json.uiLocale === null, JSON.stringify(localeBad.json.uiLocale))
+
+  const localeReset = await postLocale(null)
+  check('语言：传 null 能恢复自动（不被当成未传）', localeReset.json.uiLocale === null, JSON.stringify(localeReset.json.uiLocale))
+
+  const localeKeep = await postLocale('en')
+  check('语言：保存时不动库路径', localeKeep.json.vaultRoot === vault, JSON.stringify(localeKeep.json.vaultRoot))
+  check('语言：保存时不动自动同步设置', typeof localeKeep.json.autoSync === 'boolean')
+  await postLocale(null)
+
   // 20. 库目录被删后 status 报 missing 而不是静默换库
 // ── 13 项新功能的 HTTP 端点 ────────────────────────────────────────────────
 {
