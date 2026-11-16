@@ -80,11 +80,13 @@ const index = {
       homepage: `${repo}#readme`,
       repository: { url: repo },
       metadata: {
+        // 只留 category，不写 labels。
+        // 市场对 labels 的要求是「先在最外层 metadata.labels 里声明 id，
+        // 插件里的 labels 数组再引用这些 id」。我们的索引是单插件自建的，
+        // 没有标签目录可引用，硬写会被校验器整份拒掉：
+        //   $.plugins[0].metadata.labels[0] references undeclared id "Notes"
+        // 分类已经由 category 表达，标签省掉不影响市场展示。
         category: 'notes',
-        // labels 是纯字符串数组，不是 {en, zh} 对象：市场的校验器对每一项
-        // 要求「非空白字符串」，写成对象会被整份索引拒掉
-        // （$.plugins[0].metadata.labels[0] must be a string）。
-        labels: ['Notes', 'Local-first', 'Markdown'],
       },
       versions: [
         {

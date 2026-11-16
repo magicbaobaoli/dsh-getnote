@@ -22,17 +22,12 @@
         "url": "https://github.com/magicbaobaoli/dsh-getnote"
       },
       "metadata": {
-        "category": "notes",
-        "labels": [
-          "Notes",
-          "Local-first",
-          "Markdown"
-        ]
+        "category": "notes"
       },
       "versions": [
         {
           "version": "0.6.2",
-          "publishTimestamp": 1794802073,
+          "publishTimestamp": 1794803379,
           "source": {
             "type": "git",
             "url": "https://github.com/magicbaobaoli/dsh-getnote",
