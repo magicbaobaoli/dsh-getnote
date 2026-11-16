@@ -48,6 +48,14 @@ const React = {
   useEffect() {
     return undefined
   },
+  // 错误边界必须是 class 组件（React 只允许 class 声明 getDerivedStateFromError），
+  // 所以桩必须提供 Component，否则 client.js 会走它的兜底替身、测不到真实路径。
+  Component: class Component {
+    constructor(props) {
+      this.props = props || {}
+      this.state = {}
+    }
+  },
 }
 const requireStub = (name) => {
   if (name === 'react') return React
@@ -212,12 +220,29 @@ function textOf(node, out = [], depth = 0) {
   }
   if (typeof node === 'object' && node.type !== undefined) {
     if (typeof node.type === 'function') {
-      textOf(node.type(node.props || {}), out, depth + 1)
+      textOf(expandComponent(node.type, node.props || {}, node.children), out, depth + 1)
     } else {
       textOf(node.children, out, depth + 1)
     }
   }
   return out
+}
+
+// 展开一个组件节点。类组件（错误边界）不能当函数调用，必须 new 出来再 render，
+// 否则会抛 "Class constructor cannot be invoked without 'new'"。
+//
+// children 必须并进 props：桩的 createElement 把 children 单独存着，而真实 React
+// 是放在 props.children 里的。错误边界 render() 正是返回 this.props.children，
+// 不合并的话它会渲染出 undefined，整棵子树就「消失」了。
+function expandComponent(type, props, children) {
+  const merged = { ...(props || {}) }
+  if (merged.children === undefined && children !== undefined) merged.children = children
+  const isClass = type.prototype && typeof type.prototype.render === 'function'
+  if (!isClass) return type(merged)
+  const instance = new type(merged)
+  if (!instance.props) instance.props = merged
+  if (!instance.state) instance.state = {}
+  return instance.render()
 }
 
 // 与 textOf 同源，但返回元素节点本身（用于断言 class / 结构）
@@ -228,7 +253,7 @@ function flatNodes(node, out = [], depth = 0) {
     return out
   }
   if (typeof node === 'object' && node.type !== undefined) {
-    if (typeof node.type === 'function') flatNodes(node.type(node.props || {}), out, depth + 1)
+    if (typeof node.type === 'function') flatNodes(expandComponent(node.type, node.props || {}, node.children), out, depth + 1)
     else {
       out.push(node)
       flatNodes(node.children, out, depth + 1)
@@ -253,9 +278,11 @@ if (rendered !== null) {
     text.includes('笔记') && text.includes('云端') && text.includes('同步') && text.includes('设置'),
     text.slice(0, 120),
   )
-  // 首屏 status 还没回来，列表区应给出「这个目录还没有笔记」而不是空白
-  check('空库时列表区给出占位文案', text.includes('这个目录还没有笔记'), text.slice(0, 160))
-  check('右侧阅读区给出选笔记引导', text.includes('选一篇笔记'), text.slice(0, 200))
+  // 首屏 status 还没回来时给的是骨架屏（D4），不是「这个目录还没有笔记」——
+  // 后者会让用户以为库真的是空的，而其实只是还没读完。
+  const skNodes = flatNodes(rendered).filter((n) => typeof n.props.className === 'string' && n.props.className.indexOf('dshgn_skRow') >= 0)
+  check('首屏（status 未回）渲染骨架屏而不是空库文案', skNodes.length > 0, String(skNodes.length))
+  check('首屏不误报「还没有笔记」', !text.includes('这个目录还没有笔记'), text.slice(0, 160))
 }
 
 // 侧栏图标：PanelIcon 返回的是 <Icon ...> 元素，要再走一层才是 <svg>
@@ -828,6 +855,378 @@ if (internals) {
     for (const cls of ['dshgn_topicRow', 'dshgn_topicChip', 'dshgn_tagX', 'dshgn_imgRow', 'dshgn_img', 'dshgn_wikilink', 'dshgn_embed', 'dshgn_embedFile']) {
       check(`样式 .${cls} 已定义`, source.includes(`.${cls}{`), cls)
     }
+
+    // ── 顶栏：动作按钮在页签左边 ─────────────────────────────────────────────
+    // 位置断言只能查源码顺序：head 里 actions 的 h(...) 必须出现在 tabs 之前。
+    const actionsIdx = source.indexOf("className: 'dshgn_actions'")
+    const tabsIdx = source.indexOf("className: 'dshgn_tabs'")
+    check('顶栏里动作按钮排在页签之前', actionsIdx !== -1 && tabsIdx !== -1 && actionsIdx < tabsIdx, `${actionsIdx} < ${tabsIdx}`)
+
+    // ── 页签数字角标 ─────────────────────────────────────────────────────────
+    // 数字要单独成节点排在文字右边，不能拼进 label 字符串里（那样数字和文字同色同字号，
+    // 挤在一起像标签的一部分），也不能做成骑在页签右上角的角标（会压掉右内边距）。
+    check('页签数字是独立角标节点', /className: 'dshgn_tabBadge'/.test(source))
+    check('页签文字包在 tabLabel 里', /className: 'dshgn_tabLabel'/.test(source))
+    check(
+      '冲突页签把数字当参数传',
+      /tabButton\(\s*'conflict',\s*t\('tab\.conflict'\),\s*status !== null && status\.conflicts > 0 \? status\.conflicts : undefined,?\s*\)/.test(source),
+    )
+    check('不再把数字拼进文案', !/\$\{t\('tab\.conflict'\)\} \$\{status\.conflicts\}/.test(source))
+    // 页签常驻：早先是「有冲突才出现」，但入口凭空消失会让人以为功能被删了，
+    // 而且处理过的留档也想随时翻回去看。数字没有时不传 badge（渲染成无角标）。
+    check('冲突页签无条件渲染（不再被 status.conflicts > 0 整段包住）', !/status !== null && status\.conflicts > 0\s*\?\s*tabButton\('conflict'/.test(source))
+    check('冲突页签在页签行里始终存在', /tabButton\('sync'[\s\S]{0,600}tabButton\(\s*'conflict'[\s\S]{0,600}tabButton\('settings'/.test(source))
+    check('没有待处理时不显示角标数字', /status\.conflicts > 0 \? status\.conflicts : undefined/.test(source))
+    check('角标样式已定义', /\.dshgn_tabBadge\{/.test(source))
+    // 页签本身要改成 flex，否则 span 角标和文字会按 baseline 错位
+    check('页签是 flex 布局', /\.dshgn_tab\{[^}]*display:inline-flex/.test(source))
+
+    // ── 冲突页：未处理/已处理分区 ────────────────────────────────────────────
+    // 处理完的东西是归档不是待办，默认收起；未处理的直接铺开。
+    check('冲突按 resolved 分成两区', /pendingItems\s*=/.test(source) && /resolvedItems\s*=/.test(source))
+    check('已处理区默认折叠', /useState\(false\)[\s\S]{0,80}resolvedOpen|resolvedOpen[\s\S]{0,40}useState\(false\)/.test(source))
+    check('折叠标题行可点开合', /className: 'dshgn_foldHead'/.test(source))
+    check('折叠箭头按开合旋转', /\.dshgn_foldArrow\[data-open="true"\]\{transform:rotate\(90deg\)\}/.test(source))
+    check('已处理区显示条数', /className: 'dshgn_foldCount'/.test(source))
+    check('已处理条目显示当初选了哪边', /conflict\.pickedLocal/.test(source) && /conflict\.pickedCloud/.test(source))
+    check('已处理条目的按钮文案是「查看」', /conflict\.review/.test(source))
+
+    // ── 冲突页：采纳按钮的红框与填充态 ───────────────────────────────────────
+    // 未处理时两个都红框（谁都不像默认选项），选过的那边填浅色。
+    check('红框按钮样式已定义', /\.dshgn_btnWarn\{[^}]*state-error-primary/.test(source))
+    check('浅填充按钮样式已定义', /\.dshgn_btnPale\{[^}]*btnFillPale/.test(source))
+    check('未处理时两个按钮都是红框', /detail\.keptLocal === true[\s\S]{0,200}dshgn_btnPale[\s\S]{0,400}dshgn_btnWarn/.test(source))
+    check('选过本地版时该按钮填浅色', /detail\.keptLocal === true[\s\S]{0,120}dshgn_btnPale/.test(source))
+    check('选过云端版时该按钮填浅色', /detail\.keptLocal === false[\s\S]{0,120}dshgn_btnPale/.test(source))
+    check('浅填充色由主题色推导', /--dshgn-btnFillPale':\s*hslToHex\(hue/.test(source))
+    check('浅填充比 btnFillSoft 更浅', (() => {
+      const pale = /'--dshgn-btnFillPale':\s*hslToHex\(hue,\s*([\d.]+),\s*([\d.]+)\)/.exec(source)
+      const soft = /'--dshgn-btnFillSoft':\s*hslToHex\(hue,\s*([\d.]+),\s*([\d.]+)\)/.exec(source)
+      if (pale === null || soft === null) return false
+      return Number(pale[2]) > Number(soft[2])
+    })())
+    check('采纳后不关详情页（要看到填充态）', /const fresh = await api\(`\/conflict\/read/.test(source))
+    check('已处理可退回未处理', /\/conflict\/unresolve/.test(source))
+
+    // ── 切换动画 ─────────────────────────────────────────────────────────────
+    check('切页签有入场动画 keyframes', /@keyframes dshgn_tabIn\s*\{/.test(source))
+    check('动画绑在 .dshgn_body 上', /\.dshgn_body\{[^}]*animation:dshgn_tabIn/.test(source))
+    check('body 以 tab 作 key（否则动画不重播）', /key:\s*tab,\s*className:\s*'dshgn_body'/.test(source))
+    check('尊重 prefers-reduced-motion', /@media \(prefers-reduced-motion:reduce\)/.test(source))
+
+    // ── 主题色推导 ───────────────────────────────────────────────────────────
+    if (typeof internals.parseHex === 'function') {
+      check('parseHex 认六位', JSON.stringify(internals.parseHex('#0a2a52')) === '{"r":10,"g":42,"b":82}')
+      check('parseHex 大小写无关', JSON.stringify(internals.parseHex('#0A2A52')) === JSON.stringify(internals.parseHex('#0a2a52')))
+      check('parseHex 拒绝非颜色', internals.parseHex('blue') === null && internals.parseHex('#12345') === null && internals.parseHex(null) === null)
+    } else {
+      check('导出了 parseHex', false)
+    }
+
+    if (typeof internals.rgbToHsl === 'function' && typeof internals.hslToHex === 'function') {
+      const back = internals.parseHex(internals.hslToHex(0.5, 0.6, 0.4))
+      check('hsl→hex→rgb 往返稳定', back !== null && back.g > back.r && back.b > back.r, JSON.stringify(back))
+    }
+
+    if (typeof internals.themeVars === 'function') {
+      const accent = internals.themeVars('#c0392b')
+      check('themeVars 返回一整套变量', accent !== null && Object.keys(accent).length >= 18)
+      check('themeVars 非法输入返回 null（回落到内置配色）', internals.themeVars('nope') === null && internals.themeVars(null) === null)
+      if (accent !== null) {
+        check('推导出了 tintRgb 分量（18 处半透明色靠它）', /^\d+,\d+,\d+$/.test(accent['--dshgn-tintRgb']), accent['--dshgn-tintRgb'])
+        // 最重要的产品规则：无论用户选什么色，明度必须左深 → 中浅 → 右近白
+        const lum = (hex) => {
+          const c = internals.parseHex(hex)
+          return (c.r * 0.299 + c.g * 0.587 + c.b * 0.114) / 255
+        }
+        check(
+          '层次锁定：左栏最深 < 中栏 < 右栏最浅',
+          lum(accent['--dshgn-deep']) < lum(accent['--dshgn-mid2']) && lum(accent['--dshgn-mid2']) < lum(accent['--dshgn-light2']),
+          `${lum(accent['--dshgn-deep']).toFixed(3)} < ${lum(accent['--dshgn-mid2']).toFixed(3)} < ${lum(accent['--dshgn-light2']).toFixed(3)}`,
+        )
+        check('左栏字是浅色（深底浅字）+ 中栏字是深色', lum(accent['--dshgn-deepFg']) > 0.8 && lum(accent['--dshgn-midFg']) < 0.3)
+
+        // 淡一档的强调按钮：必须由色相推导，不能写死蓝。
+        // 否则换到墨绿/酒红主题时，「用我的本地版」会突然跳出一块亮蓝，比不淡更难看。
+        check(
+          '淡色按钮变量由主题推导',
+          typeof accent['--dshgn-btnFillSoft'] === 'string' && /^#[0-9a-f]{6}$/.test(accent['--dshgn-btnFillSoft']),
+          accent['--dshgn-btnFillSoft'],
+        )
+        check(
+          '淡色按钮确实比主按钮浅',
+          lum(accent['--dshgn-btnFillSoft']) > lum(accent['--dshgn-btnFill']),
+          `${lum(accent['--dshgn-btnFillSoft']).toFixed(3)} > ${lum(accent['--dshgn-btnFill']).toFixed(3)}`,
+        )
+      }
+      // 灰色主题不能被硬拗成彩色，也不能炸
+      const grey = internals.themeVars('#808080')
+      check('选纯灰也能推导出整套变量', grey !== null && typeof grey['--dshgn-deep'] === 'string')
+      // 纯灰主题下淡色按钮不能变成纯白（那样按钮就看不见了）
+      check(
+        '纯灰主题下淡色按钮仍有可辨色',
+        grey !== null && grey['--dshgn-btnFillSoft'] !== '#ffffff',
+        grey === null ? 'null' : grey['--dshgn-btnFillSoft'],
+      )
+    } else {
+      check('导出了 themeVars', false)
+    }
+
+    // ── 主题色卡片 UI ────────────────────────────────────────────────────────
+    check('设置页挂上主题色卡片', /h\(ThemeCard,\s*\{/.test(source))
+    check('主题色卡片有预设色板', /dshgn_swatch/.test(source))
+    check('主题色卡片有原生取色器', /type:\s*'color'/.test(source))
+    check('主题色回写 /settings', /JSON\.stringify\(\{\s*themeColor:\s*value\s*\}\)/.test(source))
+    check('主题色不合法时才不回显（null = 恢复默认）', /save\(null\)/.test(source))
+    for (const cls of ['dshgn_themeRow', 'dshgn_swatch', 'dshgn_swatchOn', 'dshgn_colorInput']) {
+      check(`样式 .${cls} 已定义`, source.includes(`.${cls}{`) || source.includes(`.${cls},`) || source.includes(`.${cls}:`), cls)
+    }
+    for (const key of ['theme.title', 'theme.desc', 'theme.custom', 'theme.preset', 'theme.apply', 'theme.reset', 'theme.saved']) {
+      check(`主题色文案 ${key} 中英都有`, internals.LEX.zh[key] !== undefined && internals.LEX.en[key] !== undefined)
+    }
+
+    // ── 主题色实时预览链路 ───────────────────────────────────────────────────
+    // 卡片里的草稿必须能传到面板根节点，否则用户选色时整面板不动、只有保存后才变，
+    // 那就不叫预览了。这三条盯的正是这条链路是否还连着。
+    check('ThemeCard 接收 onPreview 回调', /const\s*\{\s*t,\s*themeColor,\s*onSaved,\s*onError,\s*onPreview\s*\}\s*=\s*props/.test(source))
+    check('草稿变化时调用 onPreview', /onPreview\(draft\)/.test(source))
+    check('离开设置页清掉预览色', /onPreview\(null\)/.test(source))
+    check('SettingsPane 把预览回调传下去', /onThemePreview/.test(source))
+    check('面板根节点状态里有 themePreview', /const\s*\[themePreview,\s*setThemePreview\]\s*=\s*React\.useState\(null\)/.test(source))
+    check(
+      '预览色优先于已保存色',
+      /themeVars\(\s*themePreview\s*!==\s*null\s*\?\s*themePreview\s*:\s*status\s*!==\s*null\s*\?\s*status\.themeColor\s*:\s*null\s*\)/.test(source),
+    )
+    // 保存顺序：先刷新 status 再清草稿，否则会闪一下旧的已保存色
+    check('保存后先刷新再清草稿', /await onSaved\(t\('theme\.saved'\)\)\s*\n\s*setDraft\(null\)/.test(source))
+
+    // ── 三栏布局不能被动画规则顶成竖排 ───────────────────────────────────────
+    // 曾经踩过：给 .dshgn_body 加动画时顺手写了 flex-direction:column，
+    // 结果目录树/列表/正文从横向三栏变成纵向一列叠起来。
+    const bodyRules = [...source.matchAll(/\.dshgn_body\{([^}]*)\}/g)].map((m) => m[1])
+    check('存在 .dshgn_body 规则', bodyRules.length >= 1)
+    check(
+      '没有任何 .dshgn_body 规则把方向改成纵向',
+      bodyRules.every((rule) => !/flex-direction\s*:\s*column/.test(rule)),
+      bodyRules.join(' | '),
+    )
+    check('三栏横排布局仍在（flex:1;display:flex）', /\.dshgn_body\{flex:1;display:flex;min-height:0\}/.test(source))
+
+    // ── 三栏效果预览条 ───────────────────────────────────────────────────────
+    // 设置页主体是白卡片，用户在那儿看不到三栏，所以卡片里要画一条三格预览，
+    // 否则选颜色只能靠想象。
+    check('主题色卡片有三栏预览条', /dshgn_previewBar/.test(source))
+    check('预览条三格各用对应变量', /dshgn-previewCell|dshgn_previewCell/.test(source))
+    check('预览条用了三档底色变量', /--dshgn-deep/.test(source) && /--dshgn-mid/.test(source) && /--dshgn-light/.test(source))
+    check('预览条走 themeVars(active) 实时算色', /themeVars\(active\)/.test(source))
+    for (const key of ['theme.previewLeft', 'theme.previewMid', 'theme.previewRight']) {
+      check(`预览条文案 ${key} 中英都有`, internals.LEX.zh[key] !== undefined && internals.LEX.en[key] !== undefined)
+    }
+  }
+}
+
+// ── 13 项新功能（A1–D4）─────────────────────────────────────────────────────
+{
+  const lex = internals.LEX
+
+  // A1 大纲导航
+  check('A1 大纲按标题序号跳转（不依赖行号）', /querySelectorAll\('\.dshgn_h'\)/.test(source))
+  check('A1 大纲缩进随层级', /Math\.max\(0, item\.level - 1\) \* 12/.test(source))
+
+  // A2 关联笔记
+  check('A2 关联笔记单独打 /backlinks', /\/backlinks\?path=/.test(source))
+  check('A2 关联笔记失败静默不打断阅读', /hits: \[\]/.test(source))
+
+  // A3 搜索增强
+  check('A3 搜索有防抖', /220/.test(source))
+  check('A3 搜索显示命中次数', /dshgn_hitCount/.test(source))
+  check('A3 搜索显示命中行号', /dshgn_matchNo/.test(source))
+  check('A3 搜索限定语法有提示', lex.zh['search.hint'] !== undefined && lex.zh['search.hint'].indexOf('tag:') >= 0)
+
+  // A4 快捷新建模板
+  check('A4 新建有模板菜单', /dshgn_menu/.test(source) && /templatesOpen/.test(source))
+  check('A4 四种模板', /id: 'daily'/.test(source) && /id: 'book'/.test(source) && /id: 'meeting'/.test(source) && /id: 'note'/.test(source))
+  // 模板日期必须走本地时区：toISOString 按 UTC，晚上八点后会给成「明天」
+  check('A4 模板日期用本地时区', !/toISOString\(\)\.slice\(0, 10\)/.test(source))
+
+  // B1 单篇同步
+  check('B1 单篇推云端', /\/sync\/push-one/.test(source))
+  check('B1 单篇拉云端', /\/sync\/pull-one/.test(source))
+  check('B1 只对有 note_id 的笔记显示', /current\.noteId/.test(source))
+
+  // B2 冲突比对
+  check('B2 冲突页签按需出现', /status\.conflicts > 0/.test(source))
+  check('B2 冲突左右并排', /dshgn_diffRow/.test(source) && /dshgn_diffCol/.test(source))
+  // 比对默认渲染成 markdown（和笔记/云端页一致），裸文本读起来像配置文件。
+  // 想抠空格差异时切「原文」，所以两条路径都必须存在。
+  check('B2 比对默认渲染 markdown', /dshgn_diffMd/.test(source) && /diffMode === 'rendered'/.test(source))
+  check('B2 比对可切原文', /dshgn_diffBody/.test(source) && /diffMode === 'raw'/.test(source))
+  // 留档正文必须优先用 body（已剥掉 frontmatter），否则渲染出一堆 `title: xxx`
+  check('B2 优先用剥过 frontmatter 的 body', /detail\.body !== undefined/.test(source) && /detail\.local\.body !== undefined/.test(source))
+  // 左右两列的来源必须由 host 的 archiveIsCloud 决定，不能靠名字硬套。
+  // 两种留档都真实存在：不带 cloud- 的装本地版，带 cloud- 的装云端版。
+  check(
+    'B2 用 archiveIsCloud 判断留档是哪一边',
+    /detail\.archiveIsCloud === true/.test(source),
+  )
+  check(
+    'B2 左右两列按 archiveIsCloud 分配来源',
+    /const localBody = archiveIsCloud \? liveText : archiveText/.test(source) &&
+      /const cloudBody = archiveIsCloud \? archiveText : liveText/.test(source),
+  )
+  check(
+    'B2 两侧空态文案与来源对应',
+    /sideBlock\(localBody, t\('conflict\.noLocal'\)\)/.test(source) &&
+      /sideBlock\(cloudBody, t\('conflict\.noCloud'\)\)/.test(source),
+  )
+
+  // B3 仅前台运行
+  check('B3 有仅前台运行开关', /foregroundOnly/.test(source))
+  // 心跳是承重的：没有它 host 永远认为面板不可见，同步永不触发
+  check('B3 面板发心跳', /ping: true/.test(source))
+  check('B3 心跳间隔 20 秒', /20000/.test(source))
+
+  // C1 整库导出导入
+  check('C1 导出用 a[download] 而非 window.open', /archive\/export/.test(source) && /anchor\.download/.test(source) && !/window\.open\('\/getnote\/archive/.test(source))
+  check('C1 导入带模式头', /x-getnote-import-mode/.test(source))
+  check('C1 导入两种模式', /rename/.test(source) && /skip/.test(source))
+
+  // C2 版本历史
+  check('C2 历史列表与恢复', /\/history\/list/.test(source) && /\/history\/restore/.test(source))
+  check('C2 恢复前保留当前版', /keepCurrent/.test(source))
+  check('C2 换笔记时清空历史面板', /setHistoryItems\(\[\]\)/.test(source))
+
+  // D1 键盘快捷键
+  check('D1 监听 keydown', /addEventListener\('keydown'/.test(source))
+  check('D1 Ctrl+K 聚焦搜索', /toLowerCase\(\) === 'k'/.test(source))
+  check('D1 Ctrl+N 新建', /toLowerCase\(\) === 'n'/.test(source))
+  check('D1 J/K 上下移', /event\.key === 'j'/.test(source) && /event\.key === 'k'/.test(source))
+  // 在输入框里按 j 是要打字母，不能当成翻页
+  check('D1 输入态不触发快捷键', /isContentEditable/.test(source))
+
+  // D2 批量操作
+  check('D2 多选集合用 path 不用索引', /new Set\(\)/.test(source) && /togglePick/.test(source))
+  check('D2 批量请求走 /batch', /\/batch/.test(source))
+  check('D2 批量删除要确认', /batch\.confirmDelete/.test(source))
+  for (const key of ['batch.picked', 'batch.addTag', 'batch.move', 'batch.delete']) {
+    check(`D2 文案 ${key} 中英都有`, lex.zh[key] !== undefined && lex.en[key] !== undefined)
+  }
+
+  // D3 字号三档
+  check('D3 三档字号', /dshgn_mdS/.test(source) && /dshgn_mdL/.test(source))
+  check('D3 字号持久化', /dshgn\.textScale/.test(source))
+  // 标题字号必须是 em：写死 px 的话正文调到 15px 时二级标题会比正文还小
+  check('D3 标题用 em 不用 px', /\.dshgn_h1\{font-size:1\.48em/.test(source) && !/\.dshgn_h2\{font-size:\d+px/.test(source))
+
+  // D4 骨架屏
+  check('D4 有骨架屏组件', /dshgn_skRow/.test(source))
+  check('D4 骨架屏尊重减少动效', /@media \(prefers-reduced-motion:reduce\)\{\s*\.dshgn_skRow\{animation:none/.test(source))
+  check('D4 空列表给新建入口', /empty\.noNotes/.test(source))
+}
+
+// ── 刷新按钮的旋转反馈 ────────────────────────────────────────────────────
+// 这段踩过一个坑：动画最初绑在「正在请求」这个状态上，而刷新只要几十毫秒，
+// 请求一回来动画就被拆掉，用户看到的就是「按钮根本不转」。所以断言分两层：
+// ① 动画时长是独立常量、和 CSS 对得上；② 结果揭晓发生在动画结束之后，不是请求返回时。
+check('刷新动画有独立的时长常量', /const SPIN_MS = 1400/.test(source))
+check('SPIN_MS 与 CSS 动画时长一致', /dshgn_spin 1400ms/.test(source))
+check('旋转角度是顺时针 5 圈（1800deg，正角度）', /to\{transform:rotate\(1800deg\)\}/.test(source))
+check('旋转角度不是逆时针', !/rotate\(-1800deg\)/.test(source))
+check('缓动是先快后慢（ease-out 型）', /cubic-bezier\(\.16,\.84,\.24,1\)/.test(source))
+check('转圈状态与请求状态分开（spinning 而不是 running）', /setRefreshState\('spinning'\)/.test(source))
+check('请求结果先存进 ref 不直接上色', /refreshOutcome\.current = 'ok'/.test(source) && /refreshOutcome\.current = 'fail'/.test(source))
+check('结果在动画播完后才揭晓', /refreshSpinTimer\.current = window\.setTimeout\(\(\) => \{[\s\S]{0,400}setRefreshState\(outcome\)/.test(source))
+check('成功色与失败色都已定义', /\.dshgn_iconBtnOk\{color:var\(--dsw-alias-state-success-primary\)\}/.test(source) && /\.dshgn_iconBtnFail\{color:var\(--dsw-alias-state-error-primary\)\}/.test(source))
+check('平时与「+」同色（中性灰）', /\.dshgn_head \.dshgn_iconBtn\{color:var\(--dsw-alias-label-tertiary\)\}/.test(source))
+check('成功/失败色 5 秒后复原', /setRefreshState\('idle'\)[\s\S]{0,200}\}, 5000\)/.test(source))
+
+// ── 云端知识库筛选行与笔记标题首字对齐 ──────────────────────────────────────
+// 卡片标题的左边距 = listBody 6px + 卡片左边框 2px + 卡片内边距 8px = 16px。
+// 筛选行不补这个值就会比下面的标题往左凸出，看着像没对齐的悬挂缩进。
+check('知识库筛选行左内边距对齐卡片标题', /\.dshgn_topicRow\{[^}]*padding:2px 10px 6px 16px/.test(source))
+
+// 中栏卡片：勾选框绝对定位停在左侧留白里，标题/日期/正文左端对齐。
+check('勾选框改为绝对定位不占行内', /\.dshgn_card\[data-pick="true"\] \.dshgn_pickBox\{position:absolute/.test(source))
+check('带勾选框的卡片统一留左内边距', /\.dshgn_card\[data-pick="true"\]\{position:relative;padding-left:28px\}/.test(source))
+check('笔记卡标注了 data-pick', /'data-pick': 'true'/.test(source))
+
+// 目录与标签排序互不干扰：点标签的排序按钮不能改到目录的顺序。
+check('目录排序按钮只写 dirSort 的 setter', /headActions\('dir'/.test(source) && /setDirSort\(next\)/.test(source))
+check('标签排序按钮只写 tagSort 的 setter', /headActions\('tag'/.test(source) && /setTagSort\(next\)/.test(source))
+check('两个排序源分别独立持久化', /makeSortPref\('dshgn\.sortDir'\)\.write/.test(source) && /makeSortPref\('dshgn\.sortTag'\)\.write/.test(source))
+
+// ── 左栏：排序 / 右键删除 / 新建（第七批）──────────────────────────────────
+check('目录与标签各有一套排序状态', /const \[dirSort, setDirSort\] = React\.useState/.test(source) && /const \[tagSort, setTagSort\] = React\.useState/.test(source))
+check('两套排序分别存各自的 localStorage 键', /dshgn\.sortDir/.test(source) && /dshgn\.sortTag/.test(source))
+check('不再共用一个 sortMode 开关', !/const \[sortMode, setSortMode\]/.test(source) && !/dshgn\.sortMode/.test(source))
+check('读取时校验取值合法', /saved === 'name' \|\| saved === 'count' \|\| saved === 'time'/.test(source))
+check('三种排序都已实现', /dirSort === 'name'/.test(source) && /dirSort === 'count'/.test(source) && /tagSort === 'name'/.test(source) && /tagSort === 'count'/.test(source))
+check('目录排序只依赖 dirSort', /\}, \[tree, dirs, entries, dirSort\]\)/.test(source))
+check('标签排序只依赖 tagSort', /\}, \[tagCounts, entries, tagSort\]\)/.test(source))
+check('按修改时间排序用目录下最新 mtime', /entry\.mtimeMs > max/.test(source))
+check('排序按钮在标题行右侧', /\.dshgn_treeHeadRight\{[^}]*margin-left:auto/.test(source))
+check('「+」按钮与标题之间留空隙（不紧贴）', /margin-left:auto/.test(source) && /\.dshgn_treeAdd/.test(source))
+check('排序按钮按 kind 取各自的模式与 setter', /const mode = kind === 'dir' \? dirSort : tagSort/.test(source) && /const setMode = kind === 'dir' \? onDirSortChange : onTagSortChange/.test(source))
+check('排序按钮循环切换三种模式', /const nextMode = mode === 'time' \? 'name' : mode === 'name' \? 'count' : 'time'/.test(source))
+check('目录行绑定了右键菜单', /onContextMenu: \(event\) => openMenu\(event, 'dir', node\.path\)/.test(source))
+check('标签也绑定了右键菜单', /onContextMenu: \(event\) => openMenu\(event, 'tag', tag\)/.test(source))
+check('右键菜单阻止了浏览器默认菜单', /event\.preventDefault\(\)[\s\S]{0,80}setMenu\(/.test(source))
+check('右键菜单用 fixed 定位不被裁切', /\.dshgn_ctxMenu\{[\s\S]{0,120}position:fixed/.test(source))
+check('点空白处或滚动会关闭菜单', /window\.addEventListener\('scroll', close, true\)/.test(source))
+check('删除前有二次确认弹窗', /className: 'dshgn_modalMask'/.test(source) && /className: 'dshgn_modal'/.test(source))
+check('确认文案带 {name} 占位并替换', /\.replace\(\s*'\{name\}',\s*confirm\.name/.test(source))
+check('确认弹窗的删除键是危险色', /dshgn_btn dshgn_btnDanger[\s\S]{0,200}runDelete/.test(source))
+check('新建目录走 /dir/create', /api\('\/dir\/create'/.test(source))
+check('删除目录走 /dir/delete', /api\('\/dir\/delete'/.test(source))
+check('删除标签走 /tag/delete', /api\('\/tag\/delete'/.test(source))
+check('新建标签复用批量加标签接口', /action: 'tag', paths: \[current\.path\], tag: name/.test(source))
+check('没有打开的笔记时提示先开一篇', /t\('tree\.tagNeedNote'\)/.test(source))
+check('删掉当前目录后回到全部笔记', /if \(activeDir === name\) setActiveDir\(''\)/.test(source))
+check('删掉当前标签后清空标签筛选', /if \(activeTag === name\) setActiveTag\(''\)/.test(source))
+check('非空目录给的是人话而不是原始错误', /t\('tree\.dirNotEmpty'\)/.test(source))
+check('新建输入框回车提交、Esc 取消', /event\.key === 'Enter'\) void runCreate\(\)/.test(source) && /event\.key === 'Escape'\) setCreating\(null\)/.test(source))
+check('空目录建完会提示暂时看不见', /tree\.dirCreated/.test(source))
+
+// ── 深蓝区一律白字（第七批）─────────────────────────────────────────────────
+check('深色区主文字是纯白', /'--dshgn-deepFg': '#ffffff'/.test(source))
+check('深色区二级文字是半透明白', /'--dshgn-deepFg2': 'rgba\(255,255,255,\.86\)'/.test(source))
+check('深色区三级文字是更淡的白', /'--dshgn-deepFg3': 'rgba\(255,255,255,\.66\)'/.test(source))
+check('白字不再随主题色推导（避免偏成淡绿）', !/'--dshgn-deepFg': hslToHex/.test(source))
+check('CSS 默认值同样是纯白', /--dshgn-deepFg:#ffffff/.test(source))
+
+// ── 深蓝填充上的字也必须是白（第八批补）─────────────────────────────────────
+// 这四个容器都会把「深色填充」用在自己的按钮/chip 上：主按钮、选中的 chip、
+// 选中的知识库、音频播放键。只要哪个容器漏了 --dsw-alias-label-primary-foreground，
+// 里面的按钮就会用应用默认前景色——深字压深底，几乎读不出来。
+for (const sel of ['.dshgn_pane', '.dshgn_note']) {
+  const block = new RegExp(
+    `${sel.replace('.', '\\.')}\\{[\\s\\S]*?--dsw-alias-label-primary-foreground:#ffffff[\\s\\S]*?\\}`,
+  )
+  check(`${sel} 内的深色填充用白字`, block.test(source))
+}
+check('左栏深蓝底也显式定义了前景色', /--dsw-alias-label-primary-foreground:#08182c/.test(source))
+check('每个覆盖 token 的栏都写了前景色', source.match(/--dsw-alias-label-primary-foreground:/g).length >= 4)
+
+// ── 冲突页：选完自动返回 + 「返回」键（第七批）──────────────────────────────
+check('选完自动回到冲突主列表', /setDetail\(null\)[\s\S]{0,200}await load\(\)/.test(source))
+check('「返回」键有独立文案', /'conflict\.back': '返回'/.test(source))
+check('详情页的退出键用「返回」而不是「取消」', /setDetail\(null\), disabled: busy \}, t\('conflict\.back'\)/.test(source))
+check('「退回未处理」仍然保留', /t\('conflict\.undo'\)/.test(source))
+
+// ── 组件冒烟：13 项里新增的三个组件 ─────────────────────────────────────────
+for (const name of ['ConflictPane', 'ArchiveCard', 'SkeletonPane']) {
+  const component = internals[name]
+  check(`导出了 ${name}`, typeof component === 'function')
+  if (typeof component === 'function') {
+    let ok = true
+    let detail = ''
+    try {
+      component({ t: (key) => key, status: null, onError: () => {}, showToast: () => {}, onChanged: () => {} })
+    } catch (error) {
+      ok = false
+      detail = error && error.message ? error.message : String(error)
+    }
+    check(`${name} 渲染无异常`, ok, detail)
   }
 }
 

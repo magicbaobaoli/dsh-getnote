@@ -21,6 +21,10 @@ import {
   restoreNote,
   purgeTrash,
   parseTrashName,
+  removeTag,
+  readTags,
+  rewriteTags,
+  normalizeTags,
 } from '../lib/vault.js'
 
 const results = []
@@ -211,6 +215,72 @@ note_url: https://www.biji.com/note/1200000000000000001
   const purgeAllResult = await purgeTrash(root)
   check('回收站: purgeTrash 清空全部', Array.isArray(purgeAllResult.purged) && purgeAllResult.purged.length === trashListBefore.length - 1, JSON.stringify(purgeAllResult))
   check('回收站: 清空后为空', (await listTrash(root)).length === 0)
+
+  // 标签改写：块列表写法必须整段换掉，不能留悬空 `- 甲` 残渣
+  // （这是真 bug：只替换 `tags:` 那一行的话，下面的列表项会原地留下，
+  //  文件变成「新标签 + 一堆孤儿列表项」，下次解析把它们当垃圾）
+  const readTagsFile = async (rel) => readTags(await readFile(join(root, rel), 'utf8'))
+  const blockRel = '标签测试/块列表.md'
+  await mkdir(join(root, '标签测试'), { recursive: true })
+  await writeFile(join(root, blockRel), ['---', 'title: 块列表', 'tags:', '  - 甲', '  - 乙', '  - 丙', 'note_id: "9001"', '---', '', '正文'].join('\n'), 'utf8')
+  check('标签: readTags 认块列表写法', JSON.stringify(await readTagsFile(blockRel)) === JSON.stringify(['甲', '乙', '丙']))
+  await removeTag(root, '乙', [{ path: blockRel, tags: ['甲', '乙', '丙'] }])
+  const blockAfter = await readFile(join(root, blockRel), 'utf8')
+  check('标签: 块列表删除后剩两个', JSON.stringify(await readTagsFile(blockRel)) === JSON.stringify(['甲', '丙']), blockAfter)
+  check('标签: 块列表删除后没有悬空列表项', !/^\s+-\s/m.test(blockAfter), blockAfter)
+  check('标签: 块列表删除后其他字段没动', /^note_id: "9001"$/m.test(blockAfter) && /^title: 块列表$/m.test(blockAfter))
+
+  const inlineRel = '标签测试/行内.md'
+  await writeFile(join(root, inlineRel), ['---', 'title: 行内', 'tags: [甲, 乙]', '---', '', '正文'].join('\n'), 'utf8')
+  await removeTag(root, '乙', [{ path: inlineRel, tags: ['甲', '乙'] }])
+  check('标签: 行内写法删除只留一个', JSON.stringify(await readTagsFile(inlineRel)) === JSON.stringify(['甲']))
+
+  await removeTag(root, '甲', [{ path: inlineRel, tags: ['甲'] }])
+  check('标签: 删到空写成空数组', /^tags: \[\]$/m.test(await readFile(join(root, inlineRel), 'utf8')))
+
+  // 加标签：块列表新增要转成合法的行内数组，且不能残留旧块列表
+  const addRel = '标签测试/加标签.md'
+  await writeFile(join(root, addRel), ['---', 'title: 加标签', 'tags:', '  - 旧', '---', '', '正文'].join('\n'), 'utf8')
+  const added = rewriteTags(await readFile(join(root, addRel), 'utf8'), ['旧', '新'])
+  check('标签: rewriteTags 块列表新增合并成行内', /^tags: \[旧, 新\]$/m.test(added), added)
+  check('标签: rewriteTags 新增后无残渣', !/^\s+-\s/m.test(added), added)
+
+  // 无 frontmatter / 无 tags 字段也要能正确落盘
+  const bareRel = '标签测试/无frontmatter.md'
+  await writeFile(join(root, bareRel), '只有正文\n', 'utf8')
+  const bareOut = rewriteTags(await readFile(join(root, bareRel), 'utf8'), ['新标签'])
+  check('标签: 无 frontmatter 自动包一层', /^---\ntags: \[新标签\]\n---\n/.test(bareOut), bareOut)
+  const noTagsOut = rewriteTags(['---', 'title: 无tags', '---', '', '正文'].join('\n'), ['x'])
+  check('标签: 无 tags 字段插到末尾且保留原字段', /title: 无tags\n tags: \[x\]|title: 无tags\ntags: \[x\]/.test(noTagsOut), noTagsOut)
+
+  // 单值标签写法 `tags: 甲`（合法 YAML，不是数组）必须能被认出来，
+  // 否则 `tag:甲` 搜不到那篇——用户明明看着标签在那儿却搜不出来。
+  check('标签: normalizeTags 单值转数组', JSON.stringify(normalizeTags('独苗')) === JSON.stringify(['独苗']))
+  check('标签: normalizeTags 数组原样', JSON.stringify(normalizeTags(['甲', '乙'])) === JSON.stringify(['甲', '乙']))
+  check('标签: normalizeTags 空值回空数组', normalizeTags(undefined).length === 0 && normalizeTags('').length === 0 && normalizeTags([]).length === 0)
+  const singleRel = '标签测试/单值标签.md'
+  await writeFile(join(root, singleRel), ['---', 'tags: 独苗', '---', '', '正文里有 关键词'].join('\n'), 'utf8')
+  const singleScan = await scanVault(root)
+  const singleEntry = singleScan.entries.find((e) => e.path === singleRel)
+  check('标签: 扫描把单值写法读成数组', Array.isArray(singleEntry.tags) && singleEntry.tags[0] === '独苗', JSON.stringify(singleEntry && singleEntry.tags))
+  const singleHits = await searchNotes(root, 'tag:独苗', {})
+  check('标签: tag:单值 能搜到', Array.isArray(singleHits.hits) && singleHits.hits.some((h) => h.path === singleRel), JSON.stringify((singleHits.hits || []).map((h) => h.path)))
+
+  // 批量改标签不能每篇留一个 .bak：用户库里会堆出几十个看不见的副本。
+  // 给了 snapshot 回调时走 history，一个 .bak 都不该产生。
+  const bakDir = '标签测试'
+  const bakFilesBefore = (await readdir(join(root, bakDir))).filter((name) => name.endsWith('.bak')).length
+  await writeFile(join(root, bakDir, '批量A.md'), ['---', 'tags: [要删的, 保留的]', '---', '', '正文'].join('\n'), 'utf8')
+  await writeFile(join(root, bakDir, '批量B.md'), ['---', 'tags: [要删的]', '---', '', '正文'].join('\n'), 'utf8')
+  const snaps = []
+  const bulk = await removeTag(root, '要删的', [
+    { path: `${bakDir}/批量A.md`, tags: ['要删的', '保留的'] },
+    { path: `${bakDir}/批量B.md`, tags: ['要删的'] },
+  ], { snapshot: async (rel) => { snaps.push(rel) } })
+  check('标签: 批量删两篇', bulk.changed === 2, JSON.stringify(bulk))
+  check('标签: 批量删会先留历史快照', snaps.length === 2 && snaps.indexOf(`${bakDir}/批量A.md`) >= 0, JSON.stringify(snaps))
+  const bakFilesAfter = (await readdir(join(root, bakDir))).filter((name) => name.endsWith('.bak')).length
+  check('标签: 走历史就不产生 .bak', bakFilesAfter === bakFilesBefore, `${bakFilesBefore} → ${bakFilesAfter}`)
 } finally {
   await rm(root, { recursive: true, force: true })
 }

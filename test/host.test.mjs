@@ -175,13 +175,16 @@ try {
   const assetPostRes = await call('/asset', { method: 'POST' })
   check('POST /asset → 405', assetPostRes.status === 405, `status=${assetPostRes.status}`)
 
-  // 6. save（写入生效 + .bak）
+  // 6. save（写入生效 + 留历史而不是 .bak）
   const savedRes = await call('/save', postJson('/save', { path: '随手记/2026-11-13-示例录音笔记.md', content: '# 改过了\n\n新内容。\n' }))
   check('POST /save 成功', savedRes.status === 200 && savedRes.json.ok === true, JSON.stringify(savedRes.json))
   const onDisk = await readFile(join(vault, '随手记', '2026-11-13-示例录音笔记.md'), 'utf8')
   check('POST /save 落盘', onDisk.includes('# 改过了'))
+  // 改版后：保存不再留 .bak（那是扫不到的永久垃圾），改成在 .history 留一版。
   const bakExists = await stat(join(vault, '随手记', '2026-11-13-示例录音笔记.md.bak')).then(() => true, () => false)
-  check('POST /save 留 .bak', bakExists)
+  check('POST /save 不再留 .bak', bakExists === false)
+  const historyAfterSave = await (await call('/history/list?path=' + encodeURIComponent('随手记/2026-11-13-示例录音笔记.md'))).json
+  check('POST /save 留了历史快照', Array.isArray(historyAfterSave.items) && historyAfterSave.items.length >= 1, JSON.stringify(historyAfterSave.items && historyAfterSave.items.length))
 
   // 7. create
   const createRes = await call('/create', postJson('/create', { dir: '随手记', title: '新笔记', content: '' }))
@@ -436,7 +439,289 @@ try {
   })
   check('回收站：非 .trash 路径拒绝恢复', notInTrash.status === 400, `status=${notInTrash.status}`)
 
-  // 19. 库目录被删后 status 报 missing 而不是静默换库
+  // 19.5 主题色：默认 null → 保存 → 回 status → 非法值被拒 → null 能恢复默认
+  const themeDefault = await call('/status')
+  check('主题色：默认是 null（用内置蓝）', themeDefault.json.themeColor === null, JSON.stringify(themeDefault.json.themeColor))
+
+  const themeSave = await call('/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ themeColor: '#C0392B' }),
+  })
+  check('主题色：保存后归一化成小写', themeSave.status === 200 && themeSave.json.themeColor === '#c0392b', JSON.stringify(themeSave.json.themeColor))
+  const themeAfter = await call('/status')
+  check('主题色：写进 status 供面板取用', themeAfter.json.themeColor === '#c0392b', JSON.stringify(themeAfter.json.themeColor))
+
+  // 三位简写要展开成六位：面板的推导函数只认 #rrggbb
+  const themeShort = await call('/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ themeColor: '#FA0' }),
+  })
+  check('主题色：三位简写展开成六位', themeShort.json.themeColor === '#ffaa00', JSON.stringify(themeShort.json.themeColor))
+
+  // 非法值不该把界面搞成半坏：回落 null = 用默认配色
+  const themeBad = await call('/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ themeColor: 'chartreuse' }),
+  })
+  check('主题色：非法值回落默认而不是存下来', themeBad.json.themeColor === null, JSON.stringify(themeBad.json.themeColor))
+
+  // 恢复默认：这一条最容易坏——如果用 !== undefined 判断，null 会被当成「没传」
+  await call('/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ themeColor: '#123456' }),
+  })
+  const themeReset = await call('/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ themeColor: null }),
+  })
+  check('主题色：传 null 能恢复默认（不被当成未传）', themeReset.json.themeColor === null, JSON.stringify(themeReset.json.themeColor))
+
+  // 主题色不能污染别的设置项
+  const themeKeep = await call('/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ themeColor: '#22434f' }),
+  })
+  check('主题色：保存时不动库路径', themeKeep.json.vaultRoot === vault, JSON.stringify(themeKeep.json.vaultRoot))
+  check('主题色：保存时不动自动同步设置', typeof themeKeep.json.autoSync === 'boolean')
+
+  // 20. 库目录被删后 status 报 missing 而不是静默换库
+// ── 13 项新功能的 HTTP 端点 ────────────────────────────────────────────────
+{
+  // 局部 helper：统一解包 json，省得每处都写 .json。
+  // 注意 postJson 的签名是 (path, body)——第二个参数才是 body，别只传一个。
+  const jget = async (path) => (await call(path)).json
+  const jpost = async (path, body) => (await call(path, postJson(path, body))).json
+
+  // A1 大纲 + A2 反查：/read 一次带回 outline 与 links
+  await jpost('/save', { path: '随手记/大纲测试.md', content: '# 一\n\n正文\n\n## 二\n\n```\n# 不是标题\n```\n' })
+  const readJson = await jget('/read?path=' + encodeURIComponent('随手记/大纲测试.md'))
+  check('A1 /read 返回 outline', Array.isArray(readJson.outline) && readJson.outline.length === 2, JSON.stringify(readJson.outline))
+  check('A1 outline 跳过代码围栏里的 #', !readJson.outline.some((h) => h.text === '不是标题'), JSON.stringify(readJson.outline))
+  check('A2 /read 返回 links', Array.isArray(readJson.links))
+
+  await jpost('/save', { path: '随手记/引用者.md', content: '见 [[大纲测试]] 和 [[随手记/大纲测试|别名]]\n' })
+  const backJson = await jget('/backlinks?path=' + encodeURIComponent('随手记/大纲测试.md'))
+  check('A2 /backlinks 找到引用者', backJson.hits.some((h) => h.path === '随手记/引用者.md'), JSON.stringify(backJson.hits.map((h) => h.path)))
+
+  // A3 搜索增强：多词取交集
+  await jpost('/save', { path: '随手记/交集A.md', content: '会议 和 录音 都提到了\n' })
+  await jpost('/save', { path: '随手记/交集B.md', content: '只提到 会议\n' })
+  const andJson = await jget('/search?q=' + encodeURIComponent('会议 录音'))
+  check('A3 多词取交集', andJson.hits.length === 1 && andJson.hits[0].path === '随手记/交集A.md', JSON.stringify(andJson.hits.map((h) => h.path)))
+
+  // B2 冲突列表
+  const conflictList = await jget('/conflict/list')
+  check('B2 /conflict/list 可用', Array.isArray(conflictList.items))
+
+  // B2+ 处理一条 → 角标只数未处理的；退回未处理 → 数字回来
+  // 造一个真实冲突留档：文件名必须是「时间戳__原名」格式才会被 listConflicts 认出来。
+  // 而且两边的语义要按 cloud-sync 的真实约定摆：
+  //   正本（candidates[0]）= 云端版（同步写进去的）
+  //   .conflicts/ 留档     = 冲突时用户本地写的版本
+  const conflictName = '2026-11-15T10-00-00-000Z__2026-11-15-冲突样本.md'
+  const conflictCanonPath = '随手记/2026-11-15-冲突样本.md'
+  await jpost('/save', { path: conflictCanonPath, content: '# 冲突样本\n\nCLOUD 云端那一版\n' })
+  await jpost('/save', { path: `.conflicts/${conflictName}`, content: '# 冲突样本\n\nLOCAL 本地那一版\n' })
+  const withConflict = await jget('/conflict/list')
+  check('B2 冲突被列出', withConflict.items.some((i) => i.name === conflictName), JSON.stringify(withConflict.items.map((i) => i.name)))
+  check('B2 未处理的记作 pending', withConflict.pending >= 1, JSON.stringify(withConflict))
+  const pendingBefore = withConflict.pending
+
+  // 方向回归：点「用我的本地版」必须把**本地内容**落到正本，不能反过来。
+  // 曾经这两个分支写反，用户点本地版反而把云端版留在正本里，手写内容被丢。
+  const resolvedJson = await jpost('/conflict/resolve', { path: `.conflicts/${conflictName}`, keepLocal: true })
+  check('B2 采纳本地版成功', resolvedJson.ok === true, JSON.stringify(resolvedJson))
+  const canonAfterKeepLocal = (await jget('/read?path=' + encodeURIComponent(conflictCanonPath))).content || ''
+  check(
+    'B2 采纳本地版后正本是本地内容',
+    canonAfterKeepLocal.indexOf('LOCAL') >= 0 && canonAfterKeepLocal.indexOf('CLOUD') < 0,
+    canonAfterKeepLocal.trim(),
+  )
+  const afterResolve = await jget('/conflict/list')
+  check('B2 处理后 pending 减一', afterResolve.pending === pendingBefore - 1, `${pendingBefore} -> ${afterResolve.pending}`)
+  check('B2 处理过的条目带 resolved 标记', afterResolve.items.some((i) => i.name === conflictName && i.resolved === true))
+  check('B2 记下了采纳方向', afterResolve.items.some((i) => i.name === conflictName && i.keptLocal === true))
+  // 留档不删——能反悔是这个功能的前提
+  check('B2 处理完留档仍在', afterResolve.items.some((i) => i.name === conflictName))
+
+  const statusAfter = await jget('/status')
+  check('B2 /status 的 conflicts 只数未处理', statusAfter.conflicts === afterResolve.pending, `${statusAfter.conflicts} vs ${afterResolve.pending}`)
+
+  const undone = await jpost('/conflict/unresolve', { path: `.conflicts/${conflictName}` })
+  check('B2 退回未处理成功', undone.ok === true, JSON.stringify(undone))
+  const afterUndo = await jget('/conflict/list')
+  check('B2 退回后 pending 复原', afterUndo.pending === pendingBefore, `${afterUndo.pending} vs ${pendingBefore}`)
+  check('B2 退回后不再标 resolved', afterUndo.items.some((i) => i.name === conflictName && i.resolved !== true))
+  check('B2 /conflict/read 返回 resolved 字段', typeof (await jget('/conflict/read?path=' + encodeURIComponent(`.conflicts/${conflictName}`))).resolved === 'boolean')
+  check('B2 空 path 退回被拒', (await jpost('/conflict/unresolve', { path: '' })).error !== undefined)
+
+  // 反方向也要锁死：点「用云端版」正本必须还是云端内容，且不能把留档（本地版）写进正本。
+  // 上一步已经把正本覆盖成本地版了，这里先把正本恢复成「云端版」这个真实前提。
+  await jpost('/save', { path: conflictCanonPath, content: '# 冲突样本\n\nCLOUD 云端那一版\n' })
+  await jpost('/conflict/resolve', { path: `.conflicts/${conflictName}`, keepLocal: false })
+  const canonAfterTakeCloud = (await jget('/read?path=' + encodeURIComponent(conflictCanonPath))).content || ''
+  check(
+    'B2 采纳云端版后正本仍是云端内容',
+    canonAfterTakeCloud.indexOf('CLOUD') >= 0 && canonAfterTakeCloud.indexOf('LOCAL') < 0,
+    canonAfterTakeCloud.trim(),
+  )
+  // 收尾：退回未处理，别把这个状态留给后面的断言
+  await jpost('/conflict/unresolve', { path: `.conflicts/${conflictName}` })
+
+  // B2++ 带 cloud- 前缀的旧留档：那种文件里装的是**云端版**，不是本地版。
+  // 早期手工抢救被覆盖的云端副本时存过这种名字，真实库里就有。若仍假定
+  // 「留档一定是本地版」，遇到它就会把两边弄反 —— 这里两种方向各锁一条。
+  const cloudMarkName = '2026-11-15T11-00-00-000Z__cloud-2026-11-15-云端留档样本.md'
+  const cloudMarkCanon = '随手记/2026-11-15-云端留档样本.md'
+  await jpost('/save', { path: cloudMarkCanon, content: '# 云端留档样本\n\nLOCAL 用户手写的那版\n' })
+  await jpost('/save', { path: `.conflicts/${cloudMarkName}`, content: '# 云端留档样本\n\nCLOUD 抢救下来的云端版\n' })
+  const cloudDetail = await jget('/conflict/read?path=' + encodeURIComponent(`.conflicts/${cloudMarkName}`))
+  check('B2 带 cloud- 前缀的留档被识别为云端版', cloudDetail.archiveIsCloud === true, String(cloudDetail.archiveIsCloud))
+
+  await jpost('/conflict/resolve', { path: `.conflicts/${cloudMarkName}`, keepLocal: true })
+  const cloudMarkKeepLocal = (await jget('/read?path=' + encodeURIComponent(cloudMarkCanon))).content || ''
+  check(
+    'B2 cloud-留档：用我的本地版 → 正本仍是本地内容',
+    cloudMarkKeepLocal.indexOf('LOCAL') >= 0 && cloudMarkKeepLocal.indexOf('CLOUD') < 0,
+    cloudMarkKeepLocal.trim(),
+  )
+
+  // 复位成正本=本地、留档=云端，再验「用云端版」方向
+  await jpost('/save', { path: cloudMarkCanon, content: '# 云端留档样本\n\nLOCAL 用户手写的那版\n' })
+  await jpost('/conflict/resolve', { path: `.conflicts/${cloudMarkName}`, keepLocal: false })
+  const cloudMarkTakeCloud = (await jget('/read?path=' + encodeURIComponent(cloudMarkCanon))).content || ''
+  check(
+    'B2 cloud-留档：用云端版 → 正本变成云端内容',
+    cloudMarkTakeCloud.indexOf('CLOUD') >= 0 && cloudMarkTakeCloud.indexOf('LOCAL') < 0,
+    cloudMarkTakeCloud.trim(),
+  )
+  await jpost('/conflict/unresolve', { path: `.conflicts/${cloudMarkName}` })
+
+  // C2 历史：保存会留快照，能读回、能恢复
+  await jpost('/save', { path: '随手记/大纲测试.md', content: '# 一\n\n改过\n' })
+  const histJson = await jget('/history/list?path=' + encodeURIComponent('随手记/大纲测试.md'))
+  check('C2 保存后产生历史', Array.isArray(histJson.items) && histJson.items.length >= 1, JSON.stringify(histJson.items))
+  if (Array.isArray(histJson.items) && histJson.items.length > 0) {
+    const entry = histJson.items[0]
+    const readHist = await jget('/history/read?path=' + encodeURIComponent('随手记/大纲测试.md') + '&name=' + encodeURIComponent(entry.name))
+    check('C2 能读回历史正文', typeof readHist.content === 'string' && readHist.content.indexOf('正文') >= 0, String(readHist.content).slice(0, 40))
+    const restored = await jpost('/history/restore', { path: '随手记/大纲测试.md', name: entry.name, keepCurrent: true })
+    check('C2 恢复历史成功', restored.ok === true, JSON.stringify(restored))
+  }
+
+  // C1 归档信息
+  const exportInfo = await jget('/archive/info')
+  check('C1 /archive/info 可用', typeof exportInfo.notes === 'number' && exportInfo.notes > 0, JSON.stringify(exportInfo))
+
+  // D2 批量加标签
+  const batchTag = await jpost('/batch', { action: 'tag', paths: ['随手记/交集A.md', '随手记/交集B.md'], tag: '批量标签' })
+  check('D2 批量加标签', batchTag.ok === true && batchTag.changed === 2, JSON.stringify(batchTag))
+  const tagged = await jget('/read?path=' + encodeURIComponent('随手记/交集A.md'))
+  check('D2 标签真的写进 frontmatter', Array.isArray(tagged.tags) && tagged.tags.indexOf('批量标签') >= 0, JSON.stringify(tagged.tags))
+
+  // D2 批量移目录
+  // 注意别用「做过的项目」：那个位置在库里是个普通文件（早前测试特意放的），
+  // 拿它当目标目录会 EEXIST。
+  const batchMove = await jpost('/batch', { action: 'move', paths: ['随手记/交集B.md'], dir: '归档区' })
+  check('D2 批量移目录', batchMove.ok === true && batchMove.changed === 1, JSON.stringify(batchMove))
+  const movedList = await jget('/list')
+  check('D2 移动后原路径消失', !movedList.entries.some((e) => e.path === '随手记/交集B.md'))
+  // 搬目录不能把文件名改掉：日期前缀是用户归档库的命名约定
+  const movedEntry = movedList.entries.find((e) => e.path.indexOf('归档区/') === 0 && e.path.indexOf('交集B') >= 0)
+  check('D2 移动后保留原文件名', movedEntry !== undefined && /\/交集B\.md$/.test(movedEntry.path), JSON.stringify(movedList.entries.map((e) => e.path).filter((x) => x.indexOf('归档区') >= 0)))
+
+  // D2 批量删除
+  const batchDelete = await jpost('/batch', { action: 'delete', paths: ['随手记/交集A.md'] })
+  check('D2 批量删除', batchDelete.ok === true && batchDelete.changed === 1, JSON.stringify(batchDelete))
+  const afterDelete = await jget('/list')
+  check('D2 删除后列表里没有它', !afterDelete.entries.some((e) => e.path === '随手记/交集A.md'))
+
+  // D2 参数校验
+  const badBatch = await call('/batch', postJson('/batch', { action: 'nope', paths: ['x.md'] }))
+  check('D2 未知 action 回 400', badBatch.status === 400, String(badBatch.status))
+  const noPaths = await call('/batch', postJson('/batch', { action: 'tag', paths: [], tag: 'x' }))
+  check('D2 空 paths 回 400', noPaths.status === 400, String(noPaths.status))
+  const noTag = await call('/batch', postJson('/batch', { action: 'tag', paths: ['x.md'] }))
+  check('D2 加标签缺 tag 回 400', noTag.status === 400, String(noTag.status))
+
+  // B3 心跳只回 pong，不写设置文件
+  const pong = await jpost('/sync/auto', { ping: true })
+  check('B3 心跳回 pong', pong.ok === true && pong.pong === true, JSON.stringify(pong))
+
+  // .history 不能被当成笔记扫进列表
+  const listJson = await jget('/list')
+  check(
+    '.history 目录不被扫描成笔记',
+    !listJson.entries.some((e) => e.path.indexOf('.history/') === 0),
+    JSON.stringify(listJson.entries.map((e) => e.path).filter((x) => x.indexOf('.history') >= 0)),
+  )
+
+  // ── 目录 / 标签增删（第七批左栏右键菜单 + 「+」）─────────────────────────
+  const madeDir = await jpost('/dir/create', { dir: '临时目录' })
+  check('新建目录成功', madeDir.ok === true && madeDir.path === '临时目录', JSON.stringify(madeDir))
+  check('新建目录提示空目录暂时看不见', madeDir.empty === true, JSON.stringify(madeDir))
+  const dupDir = await jpost('/dir/create', { dir: '临时目录' })
+  check('重复建同名目录不报错（mkdir recursive）', dupDir.ok === true, JSON.stringify(dupDir))
+  const emptyDirName = await call('/dir/create', postJson('/dir/create', { dir: '   ' }))
+  check('空目录名回 400', emptyDirName.status === 400, String(emptyDirName.status))
+
+  // 非空目录拒绝删除：点一下垃圾桶就把几十篇笔记送进回收站是灾难
+  const notEmpty = await call('/dir/delete', postJson('/dir/delete', { dir: '随手记' }))
+  check('非空目录拒绝删除（409）', notEmpty.status === 409, String(notEmpty.status))
+  check('拒绝时说明还有几篇笔记', /还有/.test(JSON.stringify(notEmpty.json || {})), JSON.stringify(notEmpty.json))
+
+  // 空目录可以删
+  const rmEmpty = await jpost('/dir/delete', { dir: '临时目录' })
+  check('空目录可以删除', rmEmpty.ok === true, JSON.stringify(rmEmpty))
+  const rmMissing = await call('/dir/delete', postJson('/dir/delete', { dir: '根本不存在的目录' }))
+  check('删不存在的目录回 404', rmMissing.status === 404, String(rmMissing.status))
+  const rmRoot = await call('/dir/delete', postJson('/dir/delete', { dir: '' }))
+  check('不能删除库根', rmRoot.status === 400, String(rmRoot.status))
+
+  // 删标签：从所有笔记里抹掉，但笔记本身不动
+  const tagBefore = await jget('/list')
+  const tagNotePath = tagBefore.entries.find((e) => (e.tags || []).indexOf('批量标签') >= 0)
+  check('准备删的标签确实挂在某篇上', tagNotePath !== undefined)
+  const rmTag = await jpost('/tag/delete', { tag: '批量标签' })
+  check('删标签成功', rmTag.ok === true && rmTag.changed >= 1, JSON.stringify(rmTag))
+  const tagAfter = await jget('/list')
+  check('标签已从所有笔记移除', !tagAfter.entries.some((e) => (e.tags || []).indexOf('批量标签') >= 0))
+  check('笔记本身没被删掉', tagAfter.entries.length === tagBefore.entries.length, `${tagBefore.entries.length} → ${tagAfter.entries.length}`)
+  const rmTagAgain = await jpost('/tag/delete', { tag: '批量标签' })
+  check('重复删不存在的标签不报错', rmTagAgain.ok === true && rmTagAgain.changed === 0, JSON.stringify(rmTagAgain))
+  const noTagName = await call('/tag/delete', postJson('/tag/delete', {}))
+  check('删标签缺 tag 回 400', noTagName.status === 400, String(noTagName.status))
+
+  // 块列表写法的 tags（`tags:` 换行后跟 `  - 甲`）：
+  // 只替换 `tags:` 那一行会留下悬空列表项，文件被污染。这里从 HTTP 层验一遍。
+  const blockRel = '随手记/块列表标签.md'
+  await writeFile(
+    join(vault, blockRel),
+    ['---', 'title: 块列表标签', 'tags:', '  - 块甲', '  - 块乙', 'note_id: "9002"', '---', '', '正文'].join('\n'),
+    'utf8',
+  )
+  const blockAdded = await jpost('/batch', { action: 'tag', paths: [blockRel], tag: '块丙' })
+  check('块列表: 加标签成功', blockAdded.ok === true && blockAdded.changed === 1, JSON.stringify(blockAdded))
+  const blockText1 = await readFile(join(vault, blockRel), 'utf8')
+  check('块列表: 加标签后是合法行内数组', /^tags: \[块甲, 块乙, 块丙\]$/m.test(blockText1), blockText1)
+  check('块列表: 加标签后无悬空列表项', !/^\s+-\s/m.test(blockText1), blockText1)
+  const readBack = await jget(`/read?path=${encodeURIComponent(blockRel)}`)
+  check('块列表: 读回三个标签', Array.isArray(readBack.frontmatter.tags) && readBack.frontmatter.tags.length === 3, JSON.stringify(readBack.frontmatter.tags))
+  const blockRemoved = await jpost('/tag/delete', { tag: '块乙' })
+  check('块列表: 删标签成功', blockRemoved.ok === true && blockRemoved.changed >= 1, JSON.stringify(blockRemoved))
+  const blockText2 = await readFile(join(vault, blockRel), 'utf8')
+  check('块列表: 删标签后是合法行内数组', /^tags: \[块甲, 块丙\]$/m.test(blockText2), blockText2)
+  check('块列表: 删标签后无悬空列表项', !/^\s+-\s/m.test(blockText2), blockText2)
+  check('块列表: 其他字段原样保留', /^note_id: "9002"$/m.test(blockText2))
+  await rm(join(vault, blockRel), { force: true })
+}
+
   await rm(vault, { recursive: true, force: true })
   const missing = await call('/status')
   check('库被删后 /status 报 missing', missing.json.vaultMissing === vault, JSON.stringify(missing.json.vaultMissing))
