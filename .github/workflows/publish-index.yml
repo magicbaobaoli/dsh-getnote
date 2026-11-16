@@ -35,6 +35,9 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # 显式落到 main：打 tag 触发时 checkout 默认是 detached HEAD，
+          # 后面那次 `git commit` + `git push` 会直接失败（"not currently on a branch"）。
+          ref: main
 
       - uses: actions/setup-node@v4
         with:
@@ -42,7 +45,7 @@ jobs:
 
       - name: 跑一遍离线测试（索引指向一个跑不起来的东西没有意义）
         run: |
-          for t in vault sync host client; do
+          for t in vault sync host client archive history; do
             echo "::group::$t"
             node "test/$t.test.mjs"
             echo "::endgroup::"
