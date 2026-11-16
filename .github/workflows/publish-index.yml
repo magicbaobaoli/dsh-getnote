@@ -7,6 +7,13 @@ name: Publish plugin index
 # 关键点：index.json 里的 git 源必须钉到具体 commit，而那个 commit 必须包含
 # 本次发布的内容 —— 所以生成索引要放在 checkout 之后、且生成结果要提交进仓库，
 # 否则「索引指向的 commit」里没有 index.json 自己（对安装没影响，但会让人困惑）。
+#
+# 这个 workflow 只负责「生成并提交 index.json」，发布交给 GitHub 内建的 Pages 构建。
+# 原因：本仓库 Pages 的 build_type 是 legacy（直接从 main 分支构建），而
+# actions/deploy-pages@v4 要求 build_type 为「GitHub Actions」，两者互斥；另外
+# github-pages 环境的部署分支策略只允许 main/gh-pages，tag 触发的部署会被环境规则
+# 直接拒绝（表现为 deploy job 0 个 step 就 failure，日志还抓不到）。既然内建构建
+# 本来就会把 main 上的 index.json 发布出去，就没必要再自己 deploy 一遍。
 on:
   push:
     tags:
@@ -19,8 +26,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -55,28 +60,17 @@ jobs:
         name: 生成 index.json
         run: node scripts/build-index.mjs --repo "${{ github.server_url }}/${{ github.repository }}"
 
-      - name: 提交 index.json 并打 tag
+      - name: 提交 index.json
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add index.json
           if git diff --cached --quiet; then
             echo "index.json 无变化"
-          else
-            git commit -m "chore: publish plugin index for ${GITHUB_REF_NAME}"
-            git push
+            exit 0
           fi
-
-      - uses: actions/upload-pages-artifact@v3
-        with:
-          path: .
-
-  deploy:
-    needs: index
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - id: deploy
-        uses: actions/deploy-pages@v4
+          git commit -m "chore: publish plugin index for ${GITHUB_REF_NAME}"
+          # main 可能在这几十秒里被别人（或上一次手动推送）动过，先把本地提交挪到最新
+          # main 之上再推；直接 push 一旦被拒，这次发版的索引就静默地没上去。
+          git pull --rebase --autostash origin main
+          git push origin HEAD:main
