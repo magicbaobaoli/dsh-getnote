@@ -25,6 +25,9 @@ import {
   readTags,
   rewriteTags,
   normalizeTags,
+  renameTag,
+  heatmapOf,
+  toggleTodo,
 } from '../lib/vault.js'
 
 const results = []
@@ -281,6 +284,181 @@ note_url: https://www.biji.com/note/1200000000000000001
   check('标签: 批量删会先留历史快照', snaps.length === 2 && snaps.indexOf(`${bakDir}/批量A.md`) >= 0, JSON.stringify(snaps))
   const bakFilesAfter = (await readdir(join(root, bakDir))).filter((name) => name.endsWith('.bak')).length
   check('标签: 走历史就不产生 .bak', bakFilesAfter === bakFilesBefore, `${bakFilesBefore} → ${bakFilesAfter}`)
+
+  // ── 标签改名（对齐移动端的标签管理）──────────────────────────────────────
+  const renDir = '改名测试'
+  await mkdir(join(root, renDir), { recursive: true })
+  await writeFile(join(root, renDir, 'A.md'), ['---', 'tags: [旧名, 保留]', '---', '', '甲'].join('\n'), 'utf8')
+  await writeFile(join(root, renDir, 'B.md'), ['---', 'tags:', '  - 旧名', '---', '', '乙'].join('\n'), 'utf8')
+  await writeFile(join(root, renDir, 'C.md'), ['---', 'tags: [无关]', '---', '', '丙'].join('\n'), 'utf8')
+  const renEntries = [
+    { path: `${renDir}/A.md`, tags: ['旧名', '保留'] },
+    { path: `${renDir}/B.md`, tags: ['旧名'] },
+    { path: `${renDir}/C.md`, tags: ['无关'] },
+  ]
+  const renSnaps = []
+  const ren = await renameTag(root, '旧名', '新名', renEntries, { snapshot: async (rel) => { renSnaps.push(rel) } })
+  check('改名: 命中两篇', ren.changed === 2, JSON.stringify(ren))
+  check('改名: 没命中的那篇不动', ren.failed.length === 0)
+  check('改名: 两篇都留了历史快照', renSnaps.length === 2, JSON.stringify(renSnaps))
+  const renA = await readFile(join(root, renDir, 'A.md'), 'utf8')
+  const renB = await readFile(join(root, renDir, 'B.md'), 'utf8')
+  const renC = await readFile(join(root, renDir, 'C.md'), 'utf8')
+  check('改名: 行内写法换成了新名', /tags: \[新名, 保留\]/.test(renA), renA.split('\n')[1])
+  check('改名: 块列表写法也换成了新名', /新名/.test(renB) && !/旧名/.test(renB), renB.split('\n').slice(0, 4).join('|'))
+  check('改名: 不相干的笔记原样', /tags: \[无关\]/.test(renC))
+  check('改名: 旧名在全库消失', !/旧名/.test(renA) && !/旧名/.test(renB))
+
+  // 改到一个已存在的标签 = 合并，不能写出两个同名项
+  await writeFile(join(root, renDir, 'A.md'), ['---', 'tags: [新名, 保留]', '---', '', '甲'].join('\n'), 'utf8')
+  const merged = await renameTag(root, '新名', '保留', [{ path: `${renDir}/A.md`, tags: ['新名', '保留'] }])
+  const mergedA = await readFile(join(root, renDir, 'A.md'), 'utf8')
+  check('改名: 合并到已有标签', merged.changed === 1, JSON.stringify(merged))
+  check('改名: 合并后不重复写同名项', /tags: \[保留\]/.test(mergedA), mergedA.split('\n')[1])
+
+  // 同名改名是空操作（用户在输入框里只按了个回车）
+  const noop = await renameTag(root, '保留', '保留', [{ path: `${renDir}/A.md`, tags: ['保留'] }])
+  check('改名: 新旧同名是空操作', noop.changed === 0, JSON.stringify(noop))
+
+  // 空参数必须报错，不能静默把全库标签抹成空字符串
+  let renErr = null
+  try {
+    await renameTag(root, '  ', '新名', [])
+  } catch (error) {
+    renErr = error
+  }
+  check('改名: 空的原标签名报 400', renErr !== null && renErr.status === 400, renErr && renErr.message)
+  let renErr2 = null
+  try {
+    await renameTag(root, '保留', '  ', [])
+  } catch (error) {
+    renErr2 = error
+  }
+  check('改名: 空的新标签名报 400', renErr2 !== null && renErr2.status === 400, renErr2 && renErr2.message)
+
+  // ── 写作热力图（对齐移动端首页那张）────────────────────────────────────
+  const fixedToday = new Date('2026-11-16T12:00:00')
+  const hm = heatmapOf(
+    [
+      { date: '2026-11-16' },
+      { date: '2026-11-16' },
+      { date: '2026-11-15' },
+      { date: '2026-11-14' },
+      { date: '2026-11-10' },
+      { date: '2026-10-01' },
+      { date: null },
+      { date: '不是日期' },
+    ],
+    { weeks: 4, today: fixedToday },
+  )
+  check('热力图: 格子数 = 周数 × 7', hm.days.length === 28, String(hm.days.length))
+  check('热力图: 总数只算有日期的', hm.total === 5, String(hm.total))
+  check('热力图: 单日最多 2 篇', hm.best === 2, String(hm.best))
+  check('热力图: 连续 3 天', hm.streak === 3, String(hm.streak))
+  check('热力图: 日期升序', hm.days[0].date < hm.days[hm.days.length - 1].date)
+  check('热力图: 未来日期标了 future', hm.days[hm.days.length - 1].future === true)
+  check('热力图: 今天不是 future', hm.days.find((d) => d.date === '2026-11-16').future === false)
+  check('热力图: 没有日期的笔记不计数', hm.days.every((d) => typeof d.count === 'number'))
+
+  // 今天还没写不该让连续天数归零：很多人是晚上写，早上打开看到「0 天」会莫名其妙
+  const hmMorning = heatmapOf([{ date: '2026-11-15' }, { date: '2026-11-14' }], {
+    weeks: 4,
+    today: new Date('2026-11-16T08:00:00'),
+  })
+  check('热力图: 今天没写不算断', hmMorning.streak === 2, String(hmMorning.streak))
+
+  // 昨天也没写才算断
+  const hmBroken = heatmapOf([{ date: '2026-11-13' }], { weeks: 4, today: new Date('2026-11-16T08:00:00') })
+  check('热力图: 隔了一天就断', hmBroken.streak === 0, String(hmBroken.streak))
+
+  // 周数越界要夹住，不能让用户传 10000 周把面板卡死
+  check('热力图: 周数下限 4', heatmapOf([], { weeks: 1, today: fixedToday }).days.length === 28)
+  check('热力图: 周数上限 104', heatmapOf([], { weeks: 9999, today: fixedToday }).days.length === 104 * 7)
+
+  // ── 待办勾选 ──────────────────────────────────────────────────────────────
+  {
+    const todoDir = '未归类'
+    await mkdir(join(root, todoDir), { recursive: true })
+    const todoPath = `${todoDir}/2026-11-17-待办.md`
+    const original = [
+      '---',
+      'title: 待办',
+      'tags: [测试]',
+      '---',
+      '',
+      '# 待办',
+      '',
+      '- [ ] 第一条',
+      '- [x] 第二条',
+      '- [ ] 第三条',
+      '',
+      '```',
+      '- [ ] 围栏里的示例',
+      '```',
+      '',
+      '  - [ ] 缩进的一条',
+      '',
+    ].join('\n')
+    await writeFile(join(root, todoPath), original, 'utf8')
+    const read = async () => readFile(join(root, todoPath), 'utf8')
+
+    const snaps = []
+    const r1 = await toggleTodo(root, todoPath, 0, { snapshot: async (rel) => { snaps.push(rel) } })
+    check('待办: 勾第一条返回 done=true', r1.ok === true && r1.done === true && r1.index === 0)
+    check('待办: 第一条变成 [x]', (await read()).includes('- [x] 第一条'))
+    check('待办: 只改目标那一行，其他待办不动', (await read()).includes('- [ ] 第三条'))
+    check('待办: 围栏里的示例不被改', (await read()).includes('- [ ] 围栏里的示例'))
+    check('待办: 勾选前留了版本快照', snaps.length === 1 && snaps[0] === todoPath)
+    check('待办: 走快照时不留 .bak', !(await readdir(join(root, todoDir))).some((f) => f.endsWith('.bak')))
+    check('待办: frontmatter 完好', (await read()).startsWith('---\ntitle: 待办'))
+
+    const r2 = await toggleTodo(root, todoPath, 1)
+    check('待办: 取消勾第二条返回 done=false', r2.done === false)
+    check('待办: 第二条变成 [ ]', (await read()).includes('- [ ] 第二条'))
+
+    // 缩进的待办也算一条：与 renderBlocks 的 /^\[( |x|X)\]/ 口径不同，
+    // 这里认缩进（正文里嵌套的待办也是待办），序号顺序与视觉顺序一致。
+    const r3 = await toggleTodo(root, todoPath, 2)
+    check('待办: 第三条（围栏之后）序号正确', r3.done === true && (await read()).includes('- [x] 第三条'))
+    check('待办: 缩进那条是第 4 个（index=3）', (await read()).includes('  - [ ] 缩进的一条'))
+    const r4 = await toggleTodo(root, todoPath, 3)
+    check('待办: 缩进那条也能勾（与渲染侧同口径）', r4.done === true && (await read()).includes('  - [x] 缩进的一条'))
+
+    let err404 = null
+    try {
+      await toggleTodo(root, todoPath, 99)
+    } catch (error) {
+      err404 = error
+    }
+    check('待办: 序号越界报 404', err404 !== null && err404.status === 404)
+
+    let err400 = null
+    try {
+      await toggleTodo(root, todoPath, -1)
+    } catch (error) {
+      err400 = error
+    }
+    check('待办: 负数序号报 400', err400 !== null && err400.status === 400)
+
+    let errBad = null
+    try {
+      await toggleTodo(root, todoPath, 'x')
+    } catch (error) {
+      errBad = error
+    }
+    check('待办: 非数字序号报 400', errBad !== null && errBad.status === 400)
+
+    // 没有待办的笔记：不该静默成功
+    const emptyPath = `${todoDir}/2026-11-17-没待办.md`
+    await writeFile(join(root, emptyPath), '---\ntitle: 没待办\n---\n\n正文没有待办。\n', 'utf8')
+    let errNone = null
+    try {
+      await toggleTodo(root, emptyPath, 0)
+    } catch (error) {
+      errNone = error
+    }
+    check('待办: 笔记里没有待办时报 404 而不是假装成功', errNone !== null && errNone.status === 404)
+  }
 } finally {
   await rm(root, { recursive: true, force: true })
 }

@@ -16,6 +16,10 @@ import { dirname, join } from 'node:path'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const source = await readFile(join(here, '..', 'lib', 'client.js'), 'utf8')
+// host / vault 源码也读进来：有些约定是跨文件的（比如待办序号口径必须两端一致），
+// 只测客户端那一半等于没测。
+const hostSource = await readFile(join(here, '..', 'lib', 'index.js'), 'utf8')
+const vaultSource = await readFile(join(here, '..', 'lib', 'vault.js'), 'utf8')
 
 const results = []
 function check(name, ok, detail = '') {
@@ -274,10 +278,13 @@ if (rendered !== null) {
   const text = textOf(rendered).join(' ')
   check('渲染出标题「得到大脑」', text.includes('得到大脑'), text.slice(0, 80))
   check(
-    '渲染出四个 tab（笔记/云端/同步/设置）',
-    text.includes('笔记') && text.includes('云端') && text.includes('同步') && text.includes('设置'),
+    '渲染出五个 tab（笔记/云端/冲突/录音卡/设置）',
+    text.includes('笔记') && text.includes('云端') && text.includes('冲突') && text.includes('录音卡') && text.includes('设置'),
     text.slice(0, 120),
   )
+  // 同步不再是独立页签，收进了设置页（自动同步是「设一次就不管」的东西，
+  // 不该占一个一级入口）。
+  check('「同步」不再是一级页签', !/tabButton\('sync'/.test(source))
   // 首屏 status 还没回来时给的是骨架屏（D4），不是「这个目录还没有笔记」——
   // 后者会让用户以为库真的是空的，而其实只是还没读完。
   const skNodes = flatNodes(rendered).filter((n) => typeof n.props.className === 'string' && n.props.className.indexOf('dshgn_skRow') >= 0)
@@ -490,6 +497,78 @@ if (internals) {
     const text = pane === null ? '' : textOf(pane).join(' ')
     check('同步页说明不会覆盖本地修改', text.includes('sync.desc'), text.slice(0, 80))
     check('同步页给出配额提示', text.includes('sync.quotaHint'))
+    // 收进设置页之后不能再自带一层 dshgn_pane / dshgn_cardBox：
+    // 外层已经给了内边距和滚动区，重复套会让这张卡看起来不像旁边那一伙的，
+    // 而且会多出一条独立的滚动条。
+    const ownPane = nodes.filter((n) => typeof n.props.className === 'string' && /dshgn_(pane|cardBox)\b/.test(n.props.className))
+    check('同步卡不自带 pane/cardBox（由设置页提供）', ownPane.length === 0, String(ownPane.length))
+    check('同步卡自己就是一张 section', nodes.some((n) => n.props.className === 'dshgn_section'))
+  }
+
+  // ── 「同步」收进「设置」页 ────────────────────────────────────────────────
+  // 自动同步是「设一次就不管」的东西，占一个一级入口不划算。收进设置页后
+  // 有两件事必须成立：① 设置页真的把 SyncPane 渲染出来了；② 位置紧跟云端
+  // 接入卡——「用哪条通道连云端」和「多久自动拉一次」是同一件事的两半。
+  {
+    check('设置页挂上 SyncPane', /h\(SyncPane,\s*\{/.test(source))
+    const cloudIdx = source.indexOf('h(CloudCredCard,')
+    const syncIdx = source.indexOf('h(SyncPane,')
+    const themeIdx = source.indexOf('h(ThemeCard,')
+    check(
+      '同步卡紧跟云端接入卡（在主题色之前）',
+      cloudIdx !== -1 && syncIdx !== -1 && themeIdx !== -1 && cloudIdx < syncIdx && syncIdx < themeIdx,
+      `${cloudIdx} < ${syncIdx} < ${themeIdx}`,
+    )
+    check('同步卡的改动走静默刷新（不弹 toast）', /onChanged:\s*onSyncChanged/.test(source))
+    check('面板把 onSyncChanged 传给设置页', /onSyncChanged:\s*async\s*\(\)\s*=>\s*\{/.test(source))
+    check('body 里不再有 sync 分支', !/tab === 'sync'/.test(source))
+
+    if (typeof internals.SettingsPane === 'function' && typeof SyncPane === 'function') {
+      let pane = null
+      try {
+        pane = internals.SettingsPane({
+          t: tKey,
+          status: {
+            settingsPath: 'C:/x/dsh-getnote.json',
+            vaultRoot: 'D:/vault',
+            suggestions: [],
+            api: { configured: true, lastRunAt: null },
+            cloud: { loggedIn: false, expired: false },
+            autoSync: { enabled: false, minutes: 15, incremental: true, running: false, lastResult: null, lastError: null },
+            vaultMissing: null,
+            notes: 3,
+            dirs: 1,
+            bytes: 100,
+            authPath: 'C:/x/auth.json',
+          },
+          onSaved: async () => {},
+          onError: () => {},
+          showToast: () => {},
+          onSyncChanged: async () => {},
+        })
+        check('设置页渲染无异常（含同步卡）', true)
+      } catch (error) {
+        check('设置页渲染无异常（含同步卡）', false, String(error && error.message))
+      }
+      const nodes = pane === null ? [] : (function walk(node, out = [], depth = 0) {
+        if (depth > 24 || node === null || node === undefined) return out
+        if (Array.isArray(node)) {
+          for (const child of node) walk(child, out, depth + 1)
+          return out
+        }
+        if (typeof node === 'object' && node.type !== undefined) {
+          if (typeof node.type === 'function') walk(node.type(node.props || {}), out, depth + 1)
+          else {
+            out.push(node)
+            walk(node.children, out, depth + 1)
+          }
+        }
+        return out
+      })(pane)
+      const toggle = nodes.find((n) => n.type === 'button' && typeof n.props.className === 'string' && n.props.className.includes('dshgn_toggle'))
+      check('设置页里出现了自动同步开关', toggle !== undefined)
+      check('收进设置后自动同步仍然默认关', toggle !== undefined && toggle.props['data-on'] === 'false', toggle && String(toggle.props['data-on']))
+    }
   }
 
   // ── 凭证卡片：只写不回 ──
@@ -875,7 +954,7 @@ if (internals) {
     // 页签常驻：早先是「有冲突才出现」，但入口凭空消失会让人以为功能被删了，
     // 而且处理过的留档也想随时翻回去看。数字没有时不传 badge（渲染成无角标）。
     check('冲突页签无条件渲染（不再被 status.conflicts > 0 整段包住）', !/status !== null && status\.conflicts > 0\s*\?\s*tabButton\('conflict'/.test(source))
-    check('冲突页签在页签行里始终存在', /tabButton\('sync'[\s\S]{0,600}tabButton\(\s*'conflict'[\s\S]{0,600}tabButton\('settings'/.test(source))
+    check('冲突页签在页签行里始终存在', /tabButton\('cloud'[\s\S]{0,600}tabButton\(\s*'conflict'[\s\S]{0,600}tabButton\('settings'/.test(source))
     check('没有待处理时不显示角标数字', /status\.conflicts > 0 \? status\.conflicts : undefined/.test(source))
     check('角标样式已定义', /\.dshgn_tabBadge\{/.test(source))
     // 页签本身要改成 flex，否则 span 角标和文字会按 baseline 错位
@@ -1048,6 +1127,20 @@ if (internals) {
   check('A4 四种模板', /id: 'daily'/.test(source) && /id: 'book'/.test(source) && /id: 'meeting'/.test(source) && /id: 'note'/.test(source))
   // 模板日期必须走本地时区：toISOString 按 UTC，晚上八点后会给成「明天」
   check('A4 模板日期用本地时区', !/toISOString\(\)\.slice\(0, 10\)/.test(source))
+
+  // 自定义模板：内置四个之外，用户能自己攒骨架
+  check('自定义模板：新建菜单读 status.templates', /status\.templates/.test(source))
+  check('自定义模板：菜单项带 custom 标记', /custom: true/.test(source))
+  check('自定义模板：id 用 custom: 前缀区分内置', /custom:\$\{item\.name\}/.test(source) && /id\.startsWith\('custom:'\)/.test(source))
+  check('自定义模板：显示用户自己起的名字而不是查译文', /item\.custom \? item\.id\.slice\('custom:'\.length\)/.test(source))
+  check('自定义模板：设置页有 TemplateCard', /function TemplateCard\(props\)/.test(source) && /h\(TemplateCard, \{ t, status, onSaved, onError \}\)/.test(source))
+  check('自定义模板：草稿模式（改完点保存才提交）', /const dirty = draft !== null/.test(source))
+  check('自定义模板：整组替换提交而不是逐项合并', /JSON\.stringify\(\{ templates: draft !== null \? draft : \[\] \}\)/.test(source))
+  check('自定义模板：同名覆盖而不是塞两项', /list\.filter\(\(item\) => item\.name !== trimmed\)\.concat/.test(source))
+  check('自定义模板：上限 12', /setDraft\(next\.slice\(0, 12\)\)/.test(source) && /list\.length >= 12/.test(source))
+  check('自定义模板：删掉一个按钮走 remove', /const remove = React\.useCallback/.test(source))
+  check('自定义模板：三语都有 customHint', lex.zh['new.customHint'] !== undefined && lex.en['new.customHint'] !== undefined && lex.nl['new.customHint'] !== undefined)
+  check('自定义模板：三语文案键齐全', ['settings.templateTitle', 'settings.templateSave', 'settings.templateEmpty', 'settings.templateRemove'].every((k) => lex.zh[k] !== undefined && lex.en[k] !== undefined && lex.nl[k] !== undefined))
 
   // B1 单篇同步
   check('B1 单篇推云端', /\/sync\/push-one/.test(source))
@@ -1222,6 +1315,58 @@ check('「返回」键有独立文案', /'conflict\.back': '返回'/.test(source
 check('详情页的退出键用「返回」而不是「取消」', /setDetail\(null\), disabled: busy \}, t\('conflict\.back'\)/.test(source))
 check('「退回未处理」仍然保留', /t\('conflict\.undo'\)/.test(source))
 
+// ── 对齐移动端：标签改名 + 写作热力图 ─────────────────────────────────────
+{
+  // 标签改名：右键标签行 → 行内输入框（不弹窗，因为要边看原名边打字）
+  check('标签行右键菜单里有「改名」', /'tree\.menuRename': '改名'/.test(source))
+  check('目录不提供改名（目录名就是磁盘文件夹名）',
+    /target\.kind === 'tag' && typeof onRenameTag === 'function'/.test(source))
+  check('改名用行内输入框而不是弹窗', /const \[renaming, setRenaming\] = React\.useState\(null\)/.test(source))
+  check('改名输入框按 Enter 提交', /if \(event\.key === 'Enter'\) void runRename\(\)/.test(source))
+  check('改名输入框按 Escape 放弃', /if \(event\.key === 'Escape'\) setRenaming\(null\)/.test(source))
+  check('改名调 /tag/rename', /api\('\/tag\/rename'/.test(source))
+  check('改名后跟着旧标签筛的那一栏跟过去',
+    /if \(activeTag === from\) setActiveTag\(to\)/.test(source))
+  check('改名后有反馈文案', /t\('tree\.tagRenamed'\)/.test(source))
+
+  // 写作热力图：挂在左栏「全部笔记」下面
+  check('左栏挂了热力图', /h\(HeatmapStrip, \{ t, heatmap \}\)/.test(source))
+  check('热力图在「全部笔记」之后、目录区之前',
+    /t\('tree\.all'\)[\s\S]{0,600}h\(HeatmapStrip[\s\S]{0,600}t\('tree\.dirs'\)/.test(source))
+  check('热力图只画 16 周（左栏窄）', /const WEEKS = 16/.test(source))
+  check('热力图用五档而不是连续色阶', /if \(count <= 4\) return 3/.test(source))
+  check('未来日期标出来（不能画成「写了 0 篇」）', /'data-future': day\.future === true/.test(source))
+  check('热力图有 title 文案', /'heat\.title': '写作热力图'/.test(source))
+  check('热力图有连续天数文案', /'heat\.streak': '天连续'/.test(source))
+  check('热力图数据来自 /status', /heatmap: status !== null && status\.heatmap \? status\.heatmap : null/.test(source))
+  check('热力图格子用 grid 按列铺', /\.dshgn_heatGrid\{display:grid;grid-auto-flow:column/.test(source))
+  check('热力图有 future 的虚线样式', /\.dshgn_heatCell\[data-future="true"\]/.test(source))
+
+  // 组件冒烟
+  const strip = internals.HeatmapStrip
+  check('导出了 HeatmapStrip', typeof strip === 'function')
+  if (typeof strip === 'function') {
+    let ok = true
+    let detail = ''
+    try {
+      strip({ t: (key) => key, heatmap: null })
+      strip({
+        t: (key) => key,
+        heatmap: {
+          days: Array.from({ length: 28 }, (_, i) => ({ date: `2026-11-${String((i % 28) + 1).padStart(2, '0')}`, count: i % 5, future: false })),
+          total: 12,
+          streak: 3,
+          best: 4,
+        },
+      })
+    } catch (error) {
+      ok = false
+      detail = error && error.message ? error.message : String(error)
+    }
+    check('HeatmapStrip 渲染无异常（空数据也不炸）', ok, detail)
+  }
+}
+
 // ── 组件冒烟：13 项里新增的三个组件 ─────────────────────────────────────────
 for (const name of ['ConflictPane', 'ArchiveCard', 'SkeletonPane']) {
   const component = internals[name]
@@ -1237,6 +1382,108 @@ for (const name of ['ConflictPane', 'ArchiveCard', 'SkeletonPane']) {
     }
     check(`${name} 渲染无异常`, ok, detail)
   }
+}
+
+// ── 录音卡直连（本地 BLE）：页签、组件、安全开关 ──────────────────────────
+{
+  check('有录音卡页签', /tabButton\('card', t\('tab\.card'\)\)/.test(source))
+  check('录音卡页签在设置左边', /tabButton\('card'[\s\S]{0,200}tabButton\('settings'/.test(source))
+  check('body 有 card 分支', /tab === 'card'[\s\S]{0,120}h\(CardPane/.test(source))
+  check('导出了 CardPane', typeof internals.CardPane === 'function')
+
+  const cardKeys = [
+    'card.title', 'card.desc', 'card.envOk', 'card.envMissing', 'card.envHint',
+    'card.scan', 'card.scanning', 'card.scanFound', 'card.scanNone',
+    'card.pending', 'card.refresh', 'card.none', 'card.dir', 'card.dirHint',
+    'card.deleteAfter', 'card.deleteAfterHint', 'card.import', 'card.importing',
+    'card.imported', 'card.log', 'card.downloaded', 'card.skipped', 'card.failed',
+    'card.alreadyRunning', 'card.needPython', 'tab.card',
+  ]
+  for (const key of cardKeys) {
+    check(`录音卡文案 ${key} 三语齐全`, ['zh', 'en', 'nl'].every((loc) => typeof internals.LEX[loc][key] === 'string'))
+  }
+
+  // 安全线：删原件必须默认关闭，且开关文案要写明不可恢复。
+  check('删原件开关默认关闭', /useState\(false\)[\s\S]{0,80}setDeleteAfter|setDeleteAfter\] = React\.useState\(false\)/.test(source))
+  check('删原件前要二次确认', /window\.confirm\([\s\S]{0,80}永久删/.test(source))
+  check('删原件提示写了不能恢复', /不能恢复/.test(internals.LEX.zh['card.deleteAfterHint']))
+  check('删原件默认不动卡片的说明', /默认不动卡片/.test(internals.LEX.zh['card.deleteAfterHint']))
+
+  // 桥/端点接线
+  check('面板打 /card/env', /api\('\/card\/env'\)/.test(source))
+  check('面板打 /card/scan', /api\('\/card\/scan\?timeout=8'\)/.test(source))
+  check('面板打 /card/list', /api\('\/card\/list'\)/.test(source))
+  check('面板打 /card/status 轮询', /api\('\/card\/status'\)/.test(source))
+  check('面板打 /card/import', /api\('\/card\/import'/.test(source))
+  check('轮询间隔 1200ms', /\}, 1200\)/.test(source))
+  check('环境没就绪时禁用导入', /disabled: running \|\| !ready/.test(source))
+
+  let ok = true
+  let detail = ''
+  try {
+    internals.CardPane({ t: (key) => key, status: null, onError: () => {}, showToast: () => {}, onChanged: () => {} })
+  } catch (error) {
+    ok = false
+    detail = error && error.message ? error.message : String(error)
+  }
+  check('CardPane 渲染无异常', ok, detail)
+}
+
+// ── 录音卡热点快传（WiFi 数据面）────────────────────────────────────────────
+{
+  const cardBlock = source.slice(source.indexOf('function CardPane'), source.indexOf('function ArchiveCard'))
+
+  // 三个端点必须分开接线：激活失败和「连上了但没找到服务」是两种完全不同的
+  // 失败，混成一个动作就没法告诉用户该先动哪里。
+  check('热点快传走 /card/wifi-activate', /api\('\/card\/wifi-activate'/.test(cardBlock))
+  check('热点快传走 /card/wifi-join', /api\('\/card\/wifi-join'/.test(cardBlock))
+  check('热点快传走 /card/wifi-leave', /api\('\/card\/wifi-leave'/.test(cardBlock))
+  check('热点快传走 /card/wifi-scan', /api\('\/card\/wifi-scan'/.test(cardBlock))
+
+  // 退出热点必须随时可点：卡片热点没有互联网，用户被困在上面会以为断网。
+  check(
+    '退出热点按钮不受「没连上」限制',
+    /t\('card\.wifiOff'\)[\s\S]{0,80}?disabled: wifiBusy \}/.test(cardBlock) ||
+      /onClick: \(\) => void wifiOff\(\)[\s\S]{0,120}?disabled: wifiBusy,/.test(cardBlock),
+  )
+
+  // 激活按钮要依赖环境自检结果：没有 Python 时点它只会得到一条看不懂的报错。
+  check(
+    '开热点按钮依赖环境自检',
+    /wifiBusy \|\| !ready/.test(cardBlock),
+  )
+
+  // 手动连接是最后一条路（热点名/密码拿不到时），必须有输入框。
+  check('有手动热点名输入', /placeholder: t\('card\.wifiSsid'\)/.test(cardBlock))
+  check('有手动密码输入', /placeholder: t\('card\.wifiPassword'\)/.test(cardBlock))
+  check('空热点名先拦下来', /t\('card\.wifiNeedSsid'\)/.test(cardBlock))
+
+  // 连上之后要能看见「现在挂在哪个网上」——不然用户以为断网。
+  check('界面显示当前网络', /wifiNet\.current/.test(cardBlock))
+  check('界面显示已连热点', /t\('card\.wifiHotspot'\)/.test(cardBlock))
+  check('界面显示开放端口', /t\('card\.wifiPorts'\)/.test(cardBlock))
+
+  // 热点卡片必须排在「卡片上的录音」之前：快路先给人看到。
+  check(
+    '热点快传排在卡片录音之前',
+    cardBlock.indexOf("t('card.wifiTitle')") >= 0 &&
+      cardBlock.indexOf("t('card.wifiTitle')") < cardBlock.indexOf("t('card.pending')"),
+  )
+
+  const wifiKeys = [
+    'card.wifiTitle', 'card.wifiDesc', 'card.wifiAvailable', 'card.wifiGo', 'card.wifiBusy',
+    'card.wifiRescan', 'card.wifiOff', 'card.wifiSsid', 'card.wifiPassword', 'card.wifiJoin',
+    'card.wifiHotspot', 'card.wifiPorts', 'card.wifiOn', 'card.wifiNoHotspot', 'card.wifiFail',
+    'card.wifiNeedSsid',
+  ]
+  for (const key of wifiKeys) {
+    check(`热点快传文案 ${key} 三语齐全`, ['zh', 'en', 'nl'].every((loc) => typeof internals.LEX[loc][key] === 'string'))
+  }
+  check(
+    '荷兰语的热点文案不是英文照抄',
+    internals.LEX.nl['card.wifiTitle'] !== internals.LEX.en['card.wifiTitle'],
+    `${internals.LEX.nl['card.wifiTitle']} / ${internals.LEX.en['card.wifiTitle']}`,
+  )
 }
 
 // ── 第十一批：三语（zh/en/nl）+ 语言切换（m11946）──────────────────────────
@@ -1277,7 +1524,7 @@ check('GetnotePage 有 locale state', /const \[locale, setLocale\] = React\.useS
 check('t 跟着 locale 重算', /React\.useMemo\(\(\) => makeT\(\), \[locale\]\)/.test(source))
 check('status 回来后以 host 的语言为准', /if \('uiLocale' in statusJson\) setLocale\(statusJson\.uiLocale \|\| null\)/.test(source))
 check('设置页拿到 locale 与 setter', /onLocaleChange: setLocale/.test(source))
-check('设置页解构了 locale', /const \{ t, status, onSaved, onError, onThemePreview, showToast, locale, onLocaleChange \} = props/.test(source))
+check('设置页解构了 locale', /const \{ t, status, onSaved, onError, onThemePreview, showToast, locale, onLocaleChange, onSyncChanged \} = props/.test(source))
 check('设置了 LanguageCard', /h\(LanguageCard, \{ t, locale, onSaved, onError, onLocaleChange \}\)/.test(source))
 check('语言卡排在主题色之后、备份之前', /h\(ThemeCard[\s\S]{0,400}h\(LanguageCard[\s\S]{0,400}h\(ArchiveCard/.test(source))
 check('语言卡把 uiLocale 发给 host', /JSON\.stringify\(\{ uiLocale: next \}\)/.test(source))
@@ -1315,6 +1562,69 @@ check('内部调用（新建/保存/双链）仍是不收起', !/void openNote\(
 check('openCloudNote 支持 toggle', /async \(note, toggle = false\)/.test(source))
 check('云端 toggle 命中同一条就收起', /if \(toggle && selected !== null && selected\.noteId === note\.noteId\)/.test(source))
 check('云端卡片点击传 toggle=true', /void openCloudNote\(note, true\)/.test(source))
+
+// ── 第十一批之二：三个界面 bug（m13806）────────────────────────────────────
+// ① 长标签名撑破胶囊、字跑到圈外
+check('标签胶囊自己截断，不会撑出栏外',
+  /\.dshgn_tagRow\{[\s\S]{0,400}max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap/.test(source))
+check('左栏禁止横向溢出（长内容只能在栏内截断）',
+  /\.dshgn_tree\{[\s\S]{0,200}overflow-y:auto;overflow-x:hidden/.test(source))
+check('标签外层不会把胶囊顶宽', /\.dshgn_tagWrap\{[\s\S]{0,120}max-width:100%;min-width:0/.test(source))
+check('标签区里的改名输入行占满一整行', /\.dshgn_treeTags \.dshgn_treeNew\{width:100%/.test(source))
+
+// ② 点大纲跳转时整个面板往左移、变形
+check('大纲跳转只改 host 的 scrollTop，不碰横向',
+  /const jumpToHeading = React\.useCallback\(\(index\) => \{[\s\S]{0,900}host\.scrollTo\(\{ top: Math\.max\(0, offset\), behavior: 'smooth' \}\)/.test(source))
+check('大纲跳转不再调用 scrollIntoView（会连带滚动外层容器）',
+  !/\.scrollIntoView\(/.test(source))
+check('三栏外层不滚动，横向也不滚',
+  /\.dshgn_body\{flex:1;display:flex;min-height:0;min-width:0;overflow:hidden\}/.test(source))
+
+// ── 待办勾选（对齐移动端）────────────────────────────────────────────────
+// 阅读态点方框直接落盘。序号口径必须与 host 侧 toggleTodo 完全一致，
+// 否则点第一条却勾了第二条——这是这个功能唯一会「看起来能用其实错」的地方。
+if (internals) {
+  const { renderBlocks } = internals
+  const collectChecks = (nodes, out = []) => {
+    for (const node of Array.isArray(nodes) ? nodes : [nodes]) {
+      if (node === null || node === undefined || typeof node !== 'object') continue
+      if (node.type !== undefined && node.props && typeof node.props.className === 'string' && node.props.className.includes('dshgn_check')) {
+        out.push(node)
+      }
+      collectChecks(node.children, out)
+    }
+    return out
+  }
+
+  const md = ['# 待办', '', '- [ ] 第一条', '- [x] 第二条', '- [ ] 第三条', '', '```', '- [ ] 围栏里的示例', '```', ''].join('\n')
+
+  // 不给回调时：方框只展示，不可点（编辑态/冲突比对就是这种渲染）
+  const plain = collectChecks(renderBlocks(md))
+  check('不传 onToggleTodo 时也画方框', plain.length === 3, `实际 ${plain.length}`)
+  check('不可点时没有 onClick', plain.every((n) => n.props.onClick === undefined))
+  check('不可点时没有命中区样式', plain.every((n) => !n.props.className.includes('dshgn_checkHit')))
+
+  // 给回调时：三条可点，序号从 0 起，围栏里的那条不计数
+  const picked = []
+  const clickable = collectChecks(renderBlocks(md, { onToggleTodo: (i, d) => picked.push([i, d]) }))
+  check('可点时三条都是命中区', clickable.length === 3 && clickable.every((n) => n.props.className.includes('dshgn_checkHit')))
+  check('可点时带 role=checkbox', clickable.every((n) => n.props.role === 'checkbox'))
+  check('已勾的那条 aria-checked=true', clickable[1].props['aria-checked'] === 'true')
+  check('未勾的那条 aria-checked=false', clickable[0].props['aria-checked'] === 'false')
+  check('围栏里的示例不参与编号（否则会与 host 侧错位）', clickable.length === 3)
+  clickable[0].props.onClick({ preventDefault() {}, stopPropagation() {} })
+  clickable[1].props.onClick({ preventDefault() {}, stopPropagation() {} })
+  check('点第一条传 index=0 且要变成已完成', picked[0][0] === 0 && picked[0][1] === true, JSON.stringify(picked[0]))
+  check('点已勾的那条传 index=1 且要变成未完成', picked[1][0] === 1 && picked[1][1] === false, JSON.stringify(picked[1]))
+}
+
+check('host 侧有待办勾选路由', /action === 'todo' && parts\[2\] === 'toggle'/.test(hostSource || ''))
+check('勾选只翻方框那一个字符，不重建整行',
+  /lines\[targetLine\] = `\$\{indent\}\$\{bullet\} \[\$\{wasDone \? ' ' : 'x'\}\] \$\{text\}`/.test(vaultSource || ''))
+check('勾选跳过代码围栏里的待办', /if \(inFence\) continue[\s\S]{0,200}TASK\.exec\(line\)/.test(vaultSource || ''))
+check('勾选前先留版本快照', /await toggleTodo\(root, path, index, \{[\s\S]{0,120}snapshotNote\(root, rel\)/.test(hostSource || ''))
+check('编辑态不给点击回调（改内容要走保存）', /onToggleTodo: editing \? undefined : onToggleTodo/.test(source))
+check('勾完重读笔记（否则下次保存会冲掉）', /await openNote\(current\.path\)[\s\S]{0,200}t\('todo\.done'\)/.test(source))
 
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)

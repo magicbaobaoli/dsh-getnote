@@ -32,3 +32,7 @@ tmp-*.mjs
 
 # 本机的插件安装产物
 *.tgz
+
+# Python 桥的字节码缓存，不该进仓库
+__pycache__/
+*.pyc

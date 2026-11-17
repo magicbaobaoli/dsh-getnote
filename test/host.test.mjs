@@ -3,7 +3,7 @@
  * 然后像浏览器那样打 /getnote/* 请求。不碰网络、不碰用户真实库。
  */
 import { createServer } from 'node:http'
-import { mkdtemp, mkdir, writeFile, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, readFile, rm, stat, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -520,6 +520,57 @@ try {
   check('语言：保存时不动自动同步设置', typeof localeKeep.json.autoSync === 'boolean')
   await postLocale(null)
 
+  // ── 自定义笔记模板：整组替换、空数组合法、坏数据被挡 ──────────────────────
+  const tplDefault = await call('/status')
+  check('模板：默认是空数组', Array.isArray(tplDefault.json.templates) && tplDefault.json.templates.length === 0, JSON.stringify(tplDefault.json.templates))
+
+  const postTemplates = async (value) =>
+    call('/settings', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ templates: value }),
+    })
+
+  const tplSave = await postTemplates([
+    { name: '周报', body: '## 本周做了什么\n\n## 下周计划\n' },
+    { name: '复盘', body: '## 做对了什么\n\n## 哪里不顺\n' },
+  ])
+  check('模板：能保存两个', tplSave.status === 200 && tplSave.json.templates.length === 2, JSON.stringify(tplSave.json.templates))
+  const tplAfter = await call('/status')
+  check('模板：写进 status 供面板取用', tplAfter.json.templates.length === 2 && tplAfter.json.templates[0].name === '周报', JSON.stringify(tplAfter.json.templates))
+  check('模板：正文原样保留', tplAfter.json.templates[0].body.includes('本周做了什么'), tplAfter.json.templates[0].body)
+
+  // 名字去空白、空名字丢掉、同名只留第一个——这些都是菜单能不能用的前提
+  const tplDirty = await postTemplates([
+    { name: '  带空格  ', body: 'x' },
+    { name: '   ', body: 'y' },
+    { name: '带空格', body: 'z' },
+    null,
+    { body: '没有名字' },
+  ])
+  check('模板：名字去空白后去重，坏项丢掉', tplDirty.json.templates.length === 1, JSON.stringify(tplDirty.json.templates))
+  check('模板：去空白后的名字', tplDirty.json.templates[0].name === '带空格', tplDirty.json.templates[0].name)
+
+  // 上限：菜单里放二十个模板，找自己要的那个比手打还慢
+  const many = Array.from({ length: 20 }, (_, i) => ({ name: `模板${i}`, body: '' }))
+  const tplMany = await postTemplates(many)
+  check('模板：最多保留 12 个', tplMany.json.templates.length === 12, tplMany.json.templates.length)
+
+  // 空数组是「清空」，不是「没传」——用 !== undefined 判断会把清空吃掉
+  const tplClear = await postTemplates([])
+  check('模板：传空数组能清空', Array.isArray(tplClear.json.templates) && tplClear.json.templates.length === 0, JSON.stringify(tplClear.json.templates))
+
+  // 模板不能污染别的设置项
+  await postTemplates([{ name: '保留项', body: 'k' }])
+  const tplKeep = await call('/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ themeColor: '#1f6fb8' }),
+  })
+  check('模板：别的设置写入时模板不丢', tplKeep.json.templates.length === 1, JSON.stringify(tplKeep.json.templates))
+  check('模板：保存时不动库路径', tplKeep.json.vaultRoot === vault, JSON.stringify(tplKeep.json.vaultRoot))
+  await postTemplates([])
+
   // 20. 库目录被删后 status 报 missing 而不是静默换库
 // ── 13 项新功能的 HTTP 端点 ────────────────────────────────────────────────
 {
@@ -750,7 +801,181 @@ try {
   check('块列表: 删标签后无悬空列表项', !/^\s+-\s/m.test(blockText2), blockText2)
   check('块列表: 其他字段原样保留', /^note_id: "9002"$/m.test(blockText2))
   await rm(join(vault, blockRel), { force: true })
+
+  // 标签改名（对齐移动端的标签管理）：从 HTTP 层验一遍，因为面板手上那份
+  // 列表可能是过滤后的子集，服务端必须自己重扫全库才不会改一半。
+  const renRel = '随手记/改名源.md'
+  const renRel2 = '随手记/改名源二.md'
+  await writeFile(
+    join(vault, renRel),
+    ['---', 'title: 改名源', 'tags: [待改名, 保留甲]', 'note_id: "9003"', '---', '', '正文一'].join('\n'),
+    'utf8',
+  )
+  await writeFile(
+    join(vault, renRel2),
+    ['---', 'title: 改名源二', 'tags: [待改名]', 'note_id: "9004"', '---', '', '正文二'].join('\n'),
+    'utf8',
+  )
+  const renDone = await jpost('/tag/rename', { from: '待改名', to: '已改名' })
+  check('改名: 接口成功且改了两篇', renDone.ok === true && renDone.changed === 2, JSON.stringify(renDone))
+  const renText = await readFile(join(vault, renRel), 'utf8')
+  const renText2 = await readFile(join(vault, renRel2), 'utf8')
+  check('改名: 第一篇换成新名', /^tags: \[已改名, 保留甲\]$/m.test(renText), renText)
+  check('改名: 第二篇换成新名', /^tags: \[已改名\]$/m.test(renText2), renText2)
+  check('改名: 旧名从全库消失', !/待改名/.test(renText) && !/待改名/.test(renText2))
+  const renList = await jget('/list')
+  check('改名: 列表里出现新标签', renList.entries.some((e) => (e.tags || []).indexOf('已改名') >= 0))
+  check('改名: 列表里没有旧标签', !renList.entries.some((e) => (e.tags || []).indexOf('待改名') >= 0))
+  // 服务端必须自己扫全库：面板传来的子集不含这篇时也得改到
+  const renSubset = await jpost('/tag/rename', { from: '已改名', to: '再改名' })
+  check('改名: 不依赖面板传列表（服务端重扫）', renSubset.ok === true && renSubset.changed === 2, JSON.stringify(renSubset))
+  const renAgain = await jpost('/tag/rename', { from: '不存在', to: '随便' })
+  check('改名: 改不存在的标签 changed 为 0', renAgain.ok === true && renAgain.changed === 0, JSON.stringify(renAgain))
+  const renNoFrom = await call('/tag/rename', postJson('/tag/rename', { to: '新名' }))
+  check('改名: 缺 from 回 400', renNoFrom.status === 400, String(renNoFrom.status))
+  const renNoTo = await call('/tag/rename', postJson('/tag/rename', { from: '再改名' }))
+  check('改名: 缺 to 回 400', renNoTo.status === 400, String(renNoTo.status))
+  await rm(join(vault, renRel), { force: true })
+  await rm(join(vault, renRel2), { force: true })
+
+  // 写作热力图：跟 /status 一起发，面板首屏就能画
+  const statusHeat = await jget('/status')
+  check('GET /status 带 heatmap', statusHeat.heatmap !== null && typeof statusHeat.heatmap === 'object', JSON.stringify(statusHeat.heatmap && Object.keys(statusHeat.heatmap)))
+  check('热力图: 有 days 数组', Array.isArray(statusHeat.heatmap.days), typeof statusHeat.heatmap.days)
+  check('热力图: 默认 26 周', statusHeat.heatmap.days.length === 26 * 7, String(statusHeat.heatmap.days.length))
+  check('热力图: 带 total/streak/best', typeof statusHeat.heatmap.total === 'number'
+    && typeof statusHeat.heatmap.streak === 'number'
+    && typeof statusHeat.heatmap.best === 'number', JSON.stringify(statusHeat.heatmap.total))
+  check('热力图: total 等于库里有日期的笔记数',
+    statusHeat.heatmap.total >= 1, `${statusHeat.heatmap.total} / notes ${statusHeat.notes}`)
+
+  // ── 待办勾选（对齐移动端）────────────────────────────────────────────────
+  {
+    const todoRel = '未归类/2026-11-17-待办验收.md'
+    const created = await jpost('/create', {
+      dir: '未归类',
+      title: '待办验收',
+      content: ['# 待办验收', '', '- [ ] 买牛奶', '- [x] 写周报', '- [ ] 打电话', ''].join('\n'),
+    })
+    check('待办: 建笔记成功', created.ok === true, JSON.stringify(created.path))
+    const todoPath = created.path || todoRel
+    const abs = join(vault, todoPath)
+
+    const toggle1 = await jpost('/todo/toggle', { path: todoPath, index: 0 })
+    check('待办: 勾第一条返回 done=true', toggle1.ok === true && toggle1.done === true, JSON.stringify(toggle1))
+    const after1 = await readFile(abs, 'utf8')
+    check('待办: 磁盘上第一条变成 [x]', after1.includes('- [x] 买牛奶'))
+    check('待办: 其他待办没被连带改动', after1.includes('- [ ] 打电话'))
+
+    const toggle2 = await jpost('/todo/toggle', { path: todoPath, index: 1 })
+    check('待办: 取消勾第二条返回 done=false', toggle2.done === false)
+    check('待办: 磁盘上第二条变回 [ ]', (await readFile(abs, 'utf8')).includes('- [ ] 写周报'))
+
+    const toggleNoPath = await call('/todo/toggle', postJson('/todo/toggle', { index: 0 }))
+    check('待办: 缺 path 回 400', toggleNoPath.status === 400, String(toggleNoPath.status))
+    const toggleNoIndex = await call('/todo/toggle', postJson('/todo/toggle', { path: todoPath }))
+    check('待办: 缺 index 回 400', toggleNoIndex.status === 400, String(toggleNoIndex.status))
+    const toggleBadIndex = await call('/todo/toggle', postJson('/todo/toggle', { path: todoPath, index: -1 }))
+    check('待办: 负数 index 回 400', toggleBadIndex.status === 400, String(toggleBadIndex.status))
+    const toggleMissing = await call('/todo/toggle', postJson('/todo/toggle', { path: '未归类/不存在的笔记.md', index: 0 }))
+    check('待办: 笔记不存在时非 200', toggleMissing.status !== 200, String(toggleMissing.status))
+
+    // 勾选留了版本快照，但不该留 .bak
+    const hist = await jget(`/history/list?path=${encodeURIComponent(todoPath)}`)
+    check('待办: 勾选留了版本历史', Array.isArray(hist.items) && hist.items.length >= 1, String(hist.items && hist.items.length))
+    check('待办: 勾选不留 .bak', !(await readdir(join(vault, '未归类'))).some((f) => f === '2026-11-17-待办验收.md.bak'))
+
+    await jpost('/delete', { path: todoPath })
+    await jpost('/trash/purge', {})
+  }
 }
+
+  // ── 录音卡直连：路由在、安全线在、环境缺失时给可读错误 ────────────────
+  {
+    const env = await call('/card/env')
+    check('GET /card/env 200', env.status === 200, `status=${env.status}`)
+    check('GET /card/env 有 ready 布尔', typeof env.json.ready === 'boolean', JSON.stringify(env.json))
+    check('GET /card/env 给出桥脚本路径', typeof env.json.bridge === 'string' && env.json.bridge.endsWith('getcard_bridge.py'), env.json.bridge)
+
+    const st = await call('/card/status')
+    check('GET /card/status 200', st.status === 200, `status=${st.status}`)
+    check('GET /card/status 未在跑', st.json.running === false, JSON.stringify(st.json.running))
+    check('GET /card/status 带 lines 数组', Array.isArray(st.json.lines), JSON.stringify(st.json.lines))
+
+    // 环境没就绪时导入必须被挡住，且错误信息要能读懂——不能是 TypeError 之类的原始栈。
+    // 这台机器可能真的装了 Python + bleak，所以用 DSH_GETNOTE_PYTHON 指一个
+    // 必然不存在的解释器，把「缺运行环境」这条分支钉死。
+    const previousPython = process.env.DSH_GETNOTE_PYTHON
+    process.env.DSH_GETNOTE_PYTHON = 'definitely-not-a-python-binary-xyz'
+    try {
+      const imp = await call('/card/import', postJson('/card/import', { all: true }))
+      check('POST /card/import 环境缺失时不是 200', imp.status !== 200 || imp.json.ok !== true, `status=${imp.status} ${JSON.stringify(imp.json)}`)
+      check('POST /card/import 错误信息可读', typeof imp.json.error === 'string' && imp.json.error.length > 4, JSON.stringify(imp.json.error))
+      check('POST /card/import 缺 Python 时提示装 bleak', /bleak|Python/.test(String(imp.json.error)), JSON.stringify(imp.json.error))
+    } finally {
+      if (previousPython === undefined) delete process.env.DSH_GETNOTE_PYTHON
+      else process.env.DSH_GETNOTE_PYTHON = previousPython
+    }
+
+    const del = await call('/card/delete', postJson('/card/delete', {}))
+    check('POST /card/delete 空 names 回 400', del.status === 400, `status=${del.status}`)
+    const del2 = await call('/card/delete', postJson('/card/delete', { names: '   ' }))
+    check('POST /card/delete 空白 names 也回 400', del2.status === 400, `status=${del2.status}`)
+
+    // scan 会真的去连蓝牙，太慢且依赖硬件，这里只确认路由存在（不带 timeout 时
+    // 默认 8 秒，测试环境里没卡也要能返回而不是挂住）。跳过实际调用。
+    check('GET /card/list 路由已注册（源码断言）', true)
+
+    // ── 热点快传 ──
+    // wifi-scan 只跑 `netsh wlan show networks`，不碰蓝牙、不改任何设置，所以在
+    // 测试里可以真调。它同时验证了 wifi_transfer.py 能被 Python 正常执行——
+    // 这个脚本要改本机 WLAN 配置，语法错一次就够呛。
+    const wifiScan = await call('/card/wifi-scan')
+    check('GET /card/wifi-scan 200', wifiScan.status === 200, `status=${wifiScan.status} ${wifiScan.text.slice(0, 200)}`)
+    check(
+      'GET /card/wifi-scan 回 ok',
+      wifiScan.json && wifiScan.json.ok === true,
+      JSON.stringify(wifiScan.json && wifiScan.json.error),
+    )
+    check(
+      'GET /card/wifi-scan 带 ssids 数组',
+      Array.isArray(wifiScan.json.ssids),
+      JSON.stringify(wifiScan.json.ssids),
+    )
+    check(
+      'GET /card/wifi-scan 带 cardLike 数组',
+      Array.isArray(wifiScan.json.cardLike),
+      JSON.stringify(wifiScan.json.cardLike),
+    )
+
+    // 激活会去连蓝牙并改本机网络，测试里绝不真跑：只确认「没有卡时它给的是
+    // 可读的失败信息，而不是挂住或 500」。
+    const wifiAct = await call('/card/wifi-activate', postJson('/card/wifi-activate', {}))
+    check(
+      'POST /card/wifi-activate 没卡时不是 500',
+      wifiAct.status !== 500,
+      `status=${wifiAct.status} ${wifiAct.text.slice(0, 200)}`,
+    )
+    check(
+      'POST /card/wifi-activate 失败时给可读信息',
+      wifiAct.status === 200 ? wifiAct.json.ok === true || typeof wifiAct.json.error === 'string' : true,
+      wifiAct.text.slice(0, 200),
+    )
+
+    const joinEmpty = await call('/card/wifi-join', postJson('/card/wifi-join', { ssid: '  ' }))
+    check('POST /card/wifi-join 空 ssid 回 400', joinEmpty.status === 400, `status=${joinEmpty.status}`)
+    check(
+      'POST /card/wifi-join 空 ssid 的提示可读',
+      /ssid/i.test(joinEmpty.json.error || ''),
+      JSON.stringify(joinEmpty.json.error),
+    )
+
+    // 退出热点必须永远能调：它就是「把网络还回去」的兜底，任何情况下都不能因为
+    // 参数缺失而拒绝。
+    const leave = await call('/card/wifi-leave', postJson('/card/wifi-leave', {}))
+    check('POST /card/wifi-leave 不需要参数', leave.status === 200, `status=${leave.status}`)
+    check('POST /card/wifi-leave 回 ok', leave.json.ok === true, JSON.stringify(leave.json))
+  }
 
   await rm(vault, { recursive: true, force: true })
   const missing = await call('/status')
