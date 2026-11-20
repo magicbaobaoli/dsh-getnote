@@ -1248,6 +1248,29 @@ try {
   check('/graph 回 nodes 数组', Array.isArray(graphRes.json.nodes))
   check('/graph 回 edges 数组', Array.isArray(graphRes.json.edges))
   check('/graph 回库总篇数', typeof graphRes.json.total === 'number')
+  // 悬停卡片要显示目录与标签，节点里必须带着这两样。光有 title 的话
+  // 用户在图上看到一颗点，仍然不知道它是哪个目录里的哪篇。
+  const firstGraphNode = Array.isArray(graphRes.json.nodes) && graphRes.json.nodes.length > 0 ? graphRes.json.nodes[0] : null
+  check('/graph 的节点带目录', firstGraphNode !== null && typeof firstGraphNode.dir === 'string')
+  check('/graph 的节点带标签数组', firstGraphNode !== null && Array.isArray(firstGraphNode.tags))
+  check('/graph 汇报孤立节点数量', typeof graphRes.json.orphanCount === 'number')
+  check('/graph 默认不画孤立节点', graphRes.json.orphanCount >= 0 && graphRes.json.nodes.every((node) => node.degree >= 1))
+
+  const graphWithOrphans = await call('/graph?limit=200&orphans=1')
+  check('GET /graph?orphans=1 也是 200', graphWithOrphans.status === 200, graphWithOrphans.status)
+  check(
+    '带上孤立节点后至少不少画',
+    Array.isArray(graphWithOrphans.json.nodes) && graphWithOrphans.json.nodes.length >= graphRes.json.nodes.length,
+  )
+  // 有孤立笔记时才可能有 degree 0 的节点。库里如果没有孤立笔记，这条不该红。
+  const orphanNodes = Array.isArray(graphWithOrphans.json.nodes)
+    ? graphWithOrphans.json.nodes.filter((node) => node.degree === 0)
+    : []
+  check(
+    '孤立节点被画出来时 degree 是 0',
+    orphanNodes.length === 0 || orphanNodes.every((node) => node.degree === 0 && node.tags !== undefined),
+    String(orphanNodes.length),
+  )
 
   const relRes = await call(`/related?path=${encodeURIComponent('大纲测试.md')}`)
   check('GET /related 200', relRes.status === 200, relRes.status)
@@ -1375,19 +1398,55 @@ try {
     await new Promise((done) => fakeIndexServer.close(done))
   }
 
-  // 升级最危险的分支：在 git 检出 / 链接安装上就地覆盖。测试就是在一份检出里跑的，
-  // 所以这里必须被拒绝（409），绝不能「成功」。
-  let applyErr = null
+  // 升级最危险的分支：就地覆盖掉还没提交的东西。两种安装形态要分别守住——
+  //
+  //   检出 / 链接安装（有 .git）：必须直接拒绝（409），覆盖等于冲掉未提交改动。
+  //   发布包（没有 .git）：已经是最新版时必须安全空转（changed:false），不能因为
+  //                       "版本相同" 就照样下载解包覆盖一遍。
+  //
+  // 所以这里不能写死「一定被拒绝」：从 tarball 解出来的目录里跑测试就该走第二条。
+  // 指向一个与当前版本相同的假索引，让两条分支都不需要联网也能判断。
+  const sameVersionServer = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        format: 1,
+        plugins: [
+          {
+            name: 'dsh-getnote',
+            versions: [
+              {
+                version: pkgVersion,
+                source: { type: 'git', url: 'https://github.com/magicbaobaoli/dsh-getnote', commit: 'cccc3333' },
+              },
+            ],
+          },
+        ],
+      }),
+    )
+  })
+  await new Promise((done) => sameVersionServer.listen(0, '127.0.0.1', done))
+  const sameVersionIndexUrl = `http://127.0.0.1:${sameVersionServer.address().port}/index.json`
+  let applyOutcome = null
   try {
-    await updMod.applyUpdate()
+    applyOutcome = { thrown: false, value: await updMod.applyUpdate(sameVersionIndexUrl) }
   } catch (err) {
-    applyErr = err
+    applyOutcome = { thrown: true, error: err }
+  } finally {
+    await new Promise((done) => sameVersionServer.close(done))
   }
-  check('applyUpdate 在 git 检出上拒绝执行', applyErr !== null && applyErr.status === 409, String(applyErr && applyErr.status))
+  const refusedInCheckout = applyOutcome.thrown === true && applyOutcome.error.status === 409
+  const safeNoopOnInstall =
+    applyOutcome.thrown === false && applyOutcome.value.ok === true && applyOutcome.value.changed === false
   check(
-    'applyUpdate 的拒绝文案说明怎么继续',
-    applyErr !== null && /pull|常规安装/.test(applyErr.message),
-    applyErr === null ? '' : applyErr.message,
+    'applyUpdate 不会覆盖开发检出，已是最新版时也不会白下载一遍',
+    refusedInCheckout || safeNoopOnInstall,
+    applyOutcome.thrown ? 'thrown: ' + applyOutcome.error.message : JSON.stringify(applyOutcome.value),
+  )
+  check(
+    'applyUpdate 拒绝时说明怎么继续',
+    applyOutcome.thrown !== true || /pull|常规安装/.test(applyOutcome.error.message),
+    applyOutcome.thrown ? applyOutcome.error.message : '（没有拒绝：走的是安全空转分支）',
   )
 
   const own = await updMod.readOwnPackage()

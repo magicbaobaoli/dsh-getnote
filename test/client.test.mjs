@@ -1408,6 +1408,39 @@ check('「退回未处理」仍然保留', /t\('conflict\.undo'\)/.test(source))
   check('关系图渲染节点标签', /className: 'dshgn_graphLabel'/.test(source))
   check('关系图标签数受限于节点规模（多了只标枢纽）', /const labelAll = layout !== null && layout\.nodes\.length <= 22/.test(source))
   check('GraphPane 已导出（测试要用）', /\n      GraphPane,/.test(source))
+
+  // ── 关系图：搜索 / 悬停卡片 / 孤立节点开关 / 双击聚焦（对标 Obsidian）─────
+  check('关系图有搜索框', /className: 'dshgn_graphSearchInput'/.test(source))
+  check('搜索框文字走统一配色变量', /\.dshgn_graphSearchInput\{[^}]*color:var\(--dshgn-searchFg\)/.test(source))
+  check('搜索框占位符走统一配色变量', /\.dshgn_graphSearchInput::placeholder\{color:var\(--dshgn-searchPlaceholder\)/.test(source))
+  check('搜索命中数有独立样式', /className: 'dshgn_graphSearchCount'/.test(source))
+  check('搜索按标题/路径/目录/标签匹配',
+    /const hay = [^\n]*node\.title[^\n]*node\.dir[^\n]*node\.tags/.test(source))
+  check('搜索只过滤已拉到的数据（打字不联网）',
+    /if \(needle === '' \|\| layout === null\) return null/.test(source))
+  check('搜索没命中的节点被压暗', /const dimByQuery = matches !== null && !matches\.has\(node\.path\)/.test(source))
+  check('搜索命中的节点仍显示名字', /showLabel =[\s\S]{0,120}matches !== null && matches\.has\(node\.path\)/.test(source))
+  check('有清空搜索的按钮', /t\('graph\.clearSearch'\)/.test(source))
+  check('悬停卡片有标题', /className: 'dshgn_graphCardTitle'/.test(source))
+  check('悬停卡片有目录与连接数', /className: 'dshgn_graphCardMeta'/.test(source))
+  check('悬停卡片显示标签胶囊', /className: 'dshgn_graphCardTags'/.test(source))
+  check('悬停卡片绝对定位不占布局高度', /\.dshgn_graphCard\{position:absolute/.test(source))
+  check('悬停卡片不吃鼠标事件', /\.dshgn_graphCard\{[^}]*pointer-events:none/.test(source))
+  check('双击节点聚焦', /onDoubleClick: \(\) => focusNode\(node\)/.test(source))
+  check('聚焦把节点挪到画布中央',
+    /setView\(\{ k, x: W \/ 2 - node\.x \* k, y: H \/ 2 - node\.y \* k \}\)/.test(source))
+  check('聚焦前先停惯性（否则画面会滑走）',
+    /const focusNode = \(node\) => \{\s*\n\s*stopInertia\(\)/.test(source))
+  check('孤立节点开关存在', /dshgn_graphOrphanToggle/.test(source))
+  check('孤立节点开关显示数量', /typeof data\?\.orphanCount === 'number'/.test(source))
+  check('打开孤立节点时带 orphans 参数重拉',
+    /\/graph\?limit=400' \+ \(includeOrphans \? '&orphans=1' : ''\)/.test(source))
+  check('includeOrphans 在 load 依赖里', /\}, \[includeOrphans\]\)/.test(source))
+  check('节点悬停时有一圈描边', /\.dshgn_graphNode:hover \.dshgn_graphDot/.test(source))
+  for (const extra of ['graph.search', 'graph.clearSearch', 'graph.orphans', 'graph.orphanHint', 'graph.links']) {
+    const hits = source.split("'" + extra + "':").length - 1
+    check('文案 ' + extra + ' 三语齐全', hits === 3, String(hits))
+  }
   check('打开笔记时拉相关推荐', /\/related\?path=/.test(source))
   check('相关推荐渲染在反查引用之后',
     source.indexOf("t('note.backlinks')") < source.indexOf("t('related.title')"))
