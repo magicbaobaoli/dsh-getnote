@@ -979,9 +979,13 @@ if (internals) {
     check('选过云端版时该按钮填浅色', /detail\.keptLocal === false[\s\S]{0,120}dshgn_btnPale/.test(source))
     check('浅填充色由主题色推导', /--dshgn-btnFillPale':\s*hslToHex\(hue/.test(source))
     check('浅填充比 btnFillSoft 更浅', (() => {
-      const pale = /'--dshgn-btnFillPale':\s*hslToHex\(hue,\s*([\d.]+),\s*([\d.]+)\)/.exec(source)
-      const soft = /'--dshgn-btnFillSoft':\s*hslToHex\(hue,\s*([\d.]+),\s*([\d.]+)\)/.exec(source)
-      if (pale === null || soft === null) return false
+      // 深色分支里这两档正好反过来（暗底上 pale 要更沉才浮得出来），
+      // 所以只取浅色那一套：取最后一次匹配。
+      const pales = [...source.matchAll(/'--dshgn-btnFillPale':\s*hslToHex\(hue,\s*([\d.]+),\s*([\d.]+)\)/g)]
+      const softs = [...source.matchAll(/'--dshgn-btnFillSoft':\s*hslToHex\(hue,\s*([\d.]+),\s*([\d.]+)\)/g)]
+      if (pales.length === 0 || softs.length === 0) return false
+      const pale = pales[pales.length - 1]
+      const soft = softs[softs.length - 1]
       return Number(pale[2]) > Number(soft[2])
     })())
     check('采纳后不关详情页（要看到填充态）', /const fresh = await api\(`\/conflict\/read/.test(source))
@@ -1067,14 +1071,17 @@ if (internals) {
     // ── 主题色实时预览链路 ───────────────────────────────────────────────────
     // 卡片里的草稿必须能传到面板根节点，否则用户选色时整面板不动、只有保存后才变，
     // 那就不叫预览了。这三条盯的正是这条链路是否还连着。
-    check('ThemeCard 接收 onPreview 回调', /const\s*\{\s*t,\s*themeColor,\s*onSaved,\s*onError,\s*onPreview\s*\}\s*=\s*props/.test(source))
+    check(
+      'ThemeCard 接收 onPreview 回调',
+      /const\s*\{[^}]*\bonPreview\b[^}]*\}\s*=\s*props/.test(source) && /function ThemeCard\b/.test(source),
+    )
     check('草稿变化时调用 onPreview', /onPreview\(draft\)/.test(source))
     check('离开设置页清掉预览色', /onPreview\(null\)/.test(source))
     check('SettingsPane 把预览回调传下去', /onThemePreview/.test(source))
     check('面板根节点状态里有 themePreview', /const\s*\[themePreview,\s*setThemePreview\]\s*=\s*React\.useState\(null\)/.test(source))
     check(
       '预览色优先于已保存色',
-      /themeVars\(\s*themePreview\s*!==\s*null\s*\?\s*themePreview\s*:\s*status\s*!==\s*null\s*\?\s*status\.themeColor\s*:\s*null\s*\)/.test(source),
+      /themePreview\s*!==\s*null\s*\?\s*themePreview\s*:\s*status\s*!==\s*null\s*\?\s*status\.themeColor\s*:\s*null/.test(source),
     )
     // 保存顺序：先刷新 status 再清草稿，否则会闪一下旧的已保存色
     check('保存后先刷新再清草稿', /await onSaved\(t\('theme\.saved'\)\)\s*\n\s*setDraft\(null\)/.test(source))
@@ -1097,7 +1104,7 @@ if (internals) {
     check('主题色卡片有三栏预览条', /dshgn_previewBar/.test(source))
     check('预览条三格各用对应变量', /dshgn-previewCell|dshgn_previewCell/.test(source))
     check('预览条用了三档底色变量', /--dshgn-deep/.test(source) && /--dshgn-mid/.test(source) && /--dshgn-light/.test(source))
-    check('预览条走 themeVars(active) 实时算色', /themeVars\(active\)/.test(source))
+    check('预览条走 themeVars(active) 实时算色', /themeVars\(active,\s*dark\s*===\s*true\)/.test(source))
     for (const key of ['theme.previewLeft', 'theme.previewMid', 'theme.previewRight']) {
       check(`预览条文案 ${key} 中英都有`, internals.LEX.zh[key] !== undefined && internals.LEX.en[key] !== undefined)
     }
@@ -1233,6 +1240,21 @@ check('成功色与失败色都已定义', /\.dshgn_iconBtnOk\{color:var\(--dsw-
 check('平时与「+」同色（中性灰）', /\.dshgn_head \.dshgn_iconBtn\{color:var\(--dsw-alias-label-tertiary\)\}/.test(source))
 check('成功/失败色 5 秒后复原', /setRefreshState\('idle'\)[\s\S]{0,200}\}, 5000\)/.test(source))
 
+// ── P0：首屏合并成一次请求 + 扫描缓存 ──────────────────────────────────────
+// 之前一次刷新是 Promise.all([api('/status'), api('/tree')])，两个 handler 各扫
+// 一遍全库；篇数上千时刷新会明显卡。现在只打一个 /bootstrap。
+check('首屏只打一个 /bootstrap', /api\('\/bootstrap' \+ suffix\)/.test(source))
+check('首屏不再同时打 status 和 tree', !/Promise\.all\(\[api\('\/status'\), api\('\/tree'\)\]\)/.test(source))
+check('/bootstrap 的 status 从响应的 status 字段取', /bootJson\.status \? bootJson\.status : \{\}/.test(source))
+check('树/条目/目录仍从顶层字段取', /setTree\(treeJson\.tree \|\| null\)/.test(source) && /setEntries\(Array\.isArray\(treeJson\.entries\)/.test(source) && /setDirs\(Array\.isArray\(treeJson\.dirs\)/.test(source))
+
+// 只有「用户点刷新」才带 fresh=1：用户点刷新就是因为怀疑看到的是旧的，
+// 这时候还给他 1 秒内的缓存等于骗他。其余路径（保存后、删完、同步后）走缓存。
+check('刷新按钮带 fresh=1（绕过扫描缓存）', /onClick: \(\) => \{ void refresh\(\{ fresh: true \}\) \}/.test(source))
+check('refresh 接受 fresh 选项', /const refresh = React\.useCallback\(async \(options = \{\}\) => \{/.test(source))
+check('fresh 只在明确为 true 时生效', /options\.fresh === true/.test(source))
+check('内部调用仍走缓存（不传 fresh）', (source.match(/void refresh\(\)/g) || []).length >= 3)
+
 // ── 云端知识库筛选行与笔记标题首字对齐 ──────────────────────────────────────
 // 卡片标题的左边距 = listBody 6px + 卡片左边框 2px + 卡片内边距 8px = 16px。
 // 筛选行不补这个值就会比下面的标题往左凸出，看着像没对齐的悬挂缩进。
@@ -1330,14 +1352,70 @@ check('「退回未处理」仍然保留', /t\('conflict\.undo'\)/.test(source))
   check('改名后有反馈文案', /t\('tree\.tagRenamed'\)/.test(source))
 
   // 写作热力图：挂在左栏「全部笔记」下面
-  check('左栏挂了热力图', /h\(HeatmapStrip, \{ t, heatmap \}\)/.test(source))
+  check('左栏挂了热力图', /h\(HeatmapStrip, \{ t, heatmap/.test(source))
   check('热力图在「全部笔记」之后、目录区之前',
-    /t\('tree\.all'\)[\s\S]{0,600}h\(HeatmapStrip[\s\S]{0,600}t\('tree\.dirs'\)/.test(source))
+    /t\('tree\.all'\)[\s\S]{0,1600}h\(HeatmapStrip[\s\S]{0,1600}t\('tree\.dirs'\)/.test(source))
   check('热力图只画 16 周（左栏窄）', /const WEEKS = 16/.test(source))
   check('热力图用五档而不是连续色阶', /if \(count <= 4\) return 3/.test(source))
   check('未来日期标出来（不能画成「写了 0 篇」）', /'data-future': day\.future === true/.test(source))
   check('热力图有 title 文案', /'heat\.title': '写作热力图'/.test(source))
   check('热力图有连续天数文案', /'heat\.streak': '天连续'/.test(source))
+
+  // ── P3：热力图可点、保鲜度、关系图、相关推荐 ─────────────────────────────
+  check('热力图格子是可点的 button', /days\.map\(\(day\) =>\s*h\('button', \{/.test(source))
+  check('空格子与未来日期不可点（点了只会得到空列表）',
+    /disabled: day\.future === true \|\| day\.count === 0/.test(source))
+  check('点格子回传日期', /onPickDate\(day\.date\)/.test(source))
+  check('左栏挂了保鲜度条', /className: 'dshgn_stale'/.test(source))
+  check('保鲜度条只在有落灰笔记时出现', /freshness\.staleCount > 0/.test(source))
+  check('点保鲜度条进「只看落灰」', /setStaleOnly\(true\)/.test(source))
+  check('落灰集合来自 status.freshness.stale', /status\.freshness\.stale/.test(source))
+  check('按日期筛走 entry.date', /activeDate !== '' && entry\.date !== activeDate/.test(source))
+  check('筛选状态有可关闭的提示条', /className: 'dshgn_filterBar'/.test(source))
+  check('清除筛选同时清日期与落灰', /setActiveDate\(''\)[\s\S]{0,80}setStaleOnly\(false\)/.test(source))
+  check('有「关系图」页签', /tabButton\('graph', t\('tab\.graph'\)\)/.test(source))
+  check('关系图页签在录音卡之前', source.indexOf("tabButton('graph'") < source.indexOf("tabButton('card'"))
+  check('body 里有 graph 分支', /tab === 'graph'/.test(source))
+  check('关系图点节点会跳回笔记页并打开', /setTab\('notes'\)[\s\S]{0,80}openNote\(path\)/.test(source))
+  check('关系图拉 /graph', /\/graph\?limit=400/.test(source))
+  check('关系图节点半径按连接数放大', /4 \+ Math\.min\(9,/.test(source))
+  check('关系图边高亮跟随悬停', /hover === edge\.source \|\| hover === edge\.target/.test(source))
+  // 关系图改成逐帧排版：以前一帧跑完 120 次全对全，节点一多主线程就卡死。
+  check('关系图逐帧排版（requestAnimationFrame）', /requestAnimationFrame\(tick\)/.test(source))
+  check('关系图排版有进度条', /dshgn_graphProgressBar/.test(source))
+  check('关系图滚轮缩放用原生监听（passive:false）', /addEventListener\('wheel', onWheel, \{ passive: false \}\)/.test(source))
+  check('关系图拖拽平移', /dragRef\.current = \{\s*\r?\n?\s*x: event\.clientX/.test(source))
+  // 惯性滑行：松手后视图继续滑一段。这几个断言护住的是「手感」而不是「有没有」——
+  // 曾经最容易写错的三处：按帧衰减（帧率一高滑更远）、dt 不夹上限（切窗口回来瞬移）、
+  // 松手前按住不动还继续甩。
+  check('关系图有惯性滑行 startInertia', /const startInertia = \(vx0, vy0\) =>/.test(source))
+  check('惯性按时间指数衰减（不是每帧乘定值）', /Math\.exp\(-dt \/ TAU\)/.test(source))
+  check('惯性 dt 夹了上限（切窗口回来不瞬移）', /Math\.min\(48, Math\.max\(1, now - last\)\)/.test(source))
+  check('惯性有静止阈值', /Math\.hypot\(vx, vy\) < MIN/.test(source))
+  check('惯性帧可被取消', /cancelAnimationFrame\(inertiaRef\.current\)/.test(source))
+  check('组件卸载时停掉惯性', /React\.useEffect\(\(\) => stopInertia, \[stopInertia\]\)/.test(source))
+  check('按下即停惯性（甩完再按住不窜回去）', /stopInertia\(\)\s*\r?\n\s*movedRef\.current = false/.test(source))
+  check('滚轮缩放先停惯性', /event\.preventDefault\(\)[\s\S]{0,200}stopInertia\(\)/.test(source))
+  check('拖拽速度走低通滤波', /drag\.vvx = drag\.vvx \* 0\.72 \+/.test(source))
+  check('松手前静止会衰减掉惯性', /Math\.exp\(-idle \/ 90\)/.test(source))
+  check('惯性速度有上限', /const MAX = 2\.6/.test(source))
+  check('轻点一下不启动惯性', /!movedRef\.current \|\| Math\.hypot\(vx, vy\) < 0\.06/.test(source))
+  check('拖完松手不误触打开笔记', /if \(movedRef\.current\) return\s*\r?\n\s*onOpenNote\(node\.path\)/.test(source))
+  check('拖动态用 state 驱动光标', /cursor: dragging \? 'grabbing' : 'grab'/.test(source))
+  check('pointerCancel 不甩出去', /onPointerCancel: \(\) => \{[\s\S]{0,200}setDragging\(false\)/.test(source))
+  check('关系图有缩放与复位按钮', /graph\.zoomIn/.test(source) && /graph\.reset/.test(source))
+  check('关系图悬停淡出不相邻节点', /'data-dim': dim \? 'true' : 'false'/.test(source))
+  check('关系图渲染节点标签', /className: 'dshgn_graphLabel'/.test(source))
+  check('关系图标签数受限于节点规模（多了只标枢纽）', /const labelAll = layout !== null && layout\.nodes\.length <= 22/.test(source))
+  check('GraphPane 已导出（测试要用）', /\n      GraphPane,/.test(source))
+  check('打开笔记时拉相关推荐', /\/related\?path=/.test(source))
+  check('相关推荐渲染在反查引用之后',
+    source.indexOf("t('note.backlinks')") < source.indexOf("t('related.title')"))
+  check('相关推荐失败静默降级', /setRelated\(\{ hits: \[\] \}\)/.test(source))
+  for (const key of ['tab.graph', 'filter.date', 'filter.stale', 'filter.clear', 'graph.title', 'graph.desc', 'graph.empty', 'graph.loading', 'graph.nodes', 'graph.edges', 'related.title', 'related.byDir', 'heat.stale', 'heat.staleHint']) {
+    const hits = source.split("'" + key + "':").length - 1
+    check('文案 ' + key + ' 三语齐全', hits === 3)
+  }
   check('热力图数据来自 /status', /heatmap: status !== null && status\.heatmap \? status\.heatmap : null/.test(source))
   check('热力图格子用 grid 按列铺', /\.dshgn_heatGrid\{display:grid;grid-auto-flow:column/.test(source))
   check('热力图有 future 的虚线样式', /\.dshgn_heatCell\[data-future="true"\]/.test(source))
@@ -1486,6 +1564,42 @@ for (const name of ['ConflictPane', 'ArchiveCard', 'SkeletonPane']) {
   )
 }
 
+// ── 录音卡状态条（P1）：剩余空间 / MTU / 卡上文件数 ────────────────────────
+{
+  const cardBlock = source.slice(source.indexOf('function CardPane'), source.indexOf('function ArchiveCard'))
+
+  // 状态要真连上卡才拿得到，所以是「点一下才读」，不能自动跑——否则一打开面板
+  // 就去抢手机 App 的 BLE 连接，用户会以为是插件把卡连坏了。
+  check('卡片状态走 /card/info', /api\('\/card\/info'\)/.test(cardBlock))
+  check('读卡片状态有独立按钮', /t\('card\.statusRead'\)/.test(cardBlock))
+  check('读卡片状态时按钮显示进行中', /t\('card\.statusBusy'\)/.test(cardBlock))
+  check('读卡片状态依赖环境自检', /infoBusy \|\| !ready/.test(cardBlock))
+  check('卡片状态不自动加载（没有挂载即调 loadInfo 的 effect）', !/React\.useEffect\(\(\) => \{\s*void loadInfo\(\)/.test(cardBlock))
+  check('界面显示卡上文件数', /t\('card\.statusFiles'\)/.test(cardBlock))
+  check('界面显示剩余空间', /t\('card\.statusFree'\)/.test(cardBlock))
+  check('界面显示 MTU', /t\('card\.statusMtu'\)/.test(cardBlock))
+  check('读失败时显示可读错误', /info\.error \|\| t\('card\.statusFail'\)/.test(cardBlock))
+  check('状态卡排在环境自检之后', cardBlock.indexOf("t('card.statusTitle')") > cardBlock.indexOf("t('card.envBridge')"))
+
+  const statusKeys = [
+    'card.statusTitle', 'card.statusOk', 'card.statusFail', 'card.statusFiles',
+    'card.statusFree', 'card.statusMtu', 'card.statusRead', 'card.statusBusy', 'card.statusHint',
+  ]
+  for (const key of statusKeys) {
+    check(`卡片状态文案 ${key} 三语齐全`, ['zh', 'en', 'nl'].every((loc) => typeof internals.LEX[loc][key] === 'string'))
+  }
+}
+
+// ── 库文件监听（P1）：心跳比对 vaultVersion，外部改动自动刷新 ───────────────
+{
+  // host 每次心跳都回 vaultVersion，面板比对到变了就重新拉一次。这条链路是
+  // 「在 Obsidian 里改了笔记，面板不用手点刷新」的全部依据。
+  check('心跳读取 vaultVersion', /pong\.vaultVersion/.test(source))
+  check('首次拿到版本号只记下不刷新', /if \(seen !== null && version !== seen\)/.test(source))
+  check('版本号变了就重新拉一次', /version !== seen\) void refreshRef\.current\(\)/.test(source))
+  check('心跳用 ref 持有 refresh（避免把 effect 绑到会变的回调上）', /const refreshRef = React\.useRef\(refresh\)/.test(source))
+}
+
 // ── 第十一批：三语（zh/en/nl）+ 语言切换（m11946）──────────────────────────
 {
   const dicts = internals.LEX
@@ -1552,6 +1666,52 @@ check('导出了 LanguageCard', typeof internals.LanguageCard === 'function')
   check('当前语言那一项被标为选中', onChips.length === 1)
   check('选项里有 Nederlands', nodes.some((n) => n.children === 'Nederlands' || (n.props && n.props.children === 'Nederlands')))
 }
+
+// ── P2：粘贴 / 拖拽图片 ────────────────────────────────────────────────────
+check('编辑器有 DOM 引用（光标位置只有元素自己知道）', /const editorRef = React\.useRef\(null\)/.test(source))
+check('textarea 挂了 editorRef', /ref: editorRef,/.test(source))
+check('粘贴事件接线', /onPaste: \(event\) => \{/.test(source))
+check('粘贴只认 image/*，不吃文字', /item\.kind !== 'file' \|\| !String\(item\.type \|\| ''\)\.startsWith\('image\/'\)/.test(source))
+check('粘贴命中图片才 preventDefault', /event\.preventDefault\(\)\n\s*void uploadImage\(file\)/.test(source))
+check('dragover 必须 preventDefault（否则浏览器直接打开文件）', /onDragOver: \(event\) => \{[\s\S]{0,120}event\.preventDefault\(\)/.test(source))
+check('拖拽落点接线', /onDrop: \(event\) => \{/.test(source))
+check('拖拽只处理图片', /if \(String\(files\[i\]\.type \|\| ''\)\.startsWith\('image\/'\)\) images\.push\(files\[i\]\)/.test(source))
+check('多图按顺序逐张传（并发会打乱光标位置）', /for \(const file of images\) await uploadImage\(file\)/.test(source))
+check('插入的是 Obsidian 双链语法', /const token =[^\n]*!\[\[\$\{saved\.name\}/.test(source))
+check('插到光标处而不是末尾', /value\.slice\(0, start\) \+ token \+ value\.slice\(end\)/.test(source))
+check('插完光标落在插入内容之后', /el\.setSelectionRange\(start \+ token\.length, start \+ token\.length\)/.test(source))
+check('上传走原始字节（不经过 JSON 化的 api）', /body: file,/.test(source))
+check('上传带上扩展名 header', /'x-getnote-ext': ext/.test(source))
+check('上传路径带当前笔记', /\/getnote\/asset\/upload\?path=\$\{encodeURIComponent\(current\.path\)\}/.test(source))
+check('NotePane 解构了 onUploadImage', /onToggleTodo, onUploadImage, onLink, notesForLink \} = props/.test(source))
+check('NotePane 收到链选择器 props', /onLink: async \(path, target\) => \{/.test(source))
+check('面板把 onUploadImage 传给 NotePane', /onUploadImage: async \(file, ext\) => \{/.test(source))
+// 「链」功能：编辑与复制引用之间的链图标 + 笔记选择器
+check('链图标按钮存在且绑定 action.link', /title: t\('action\.link'\)/.test(source))
+check('链图标夹在编辑与复制引用之间', /title: t\('action\.edit'\)[^]*?title: t\('action\.link'\)[^]*?title: t\('action\.copyRef'\)/.test(source))
+check('链选择器渲染', /className: 'dshgn_linkPicker'/.test(source))
+check('链选择器可搜索候选笔记', /className: 'dshgn_linkQuery'/.test(source))
+check('链选择器排除笔记自己', /if \(p2 === owned\) return false/.test(source))
+check('链选择器点击调用 onLink', /if \(typeof onLink === 'function'\) await onLink\(current\.path, np\)/.test(source))
+check('面板把 notesForLink 传给 NotePane', /notesForLink: entries,/.test(source))
+check('链成功后刷新当前笔记', /await api\('\/link\/create'/.test(source) && /await openNote\(path\)/.test(source))
+check('链选择器三语齐全', (source.match(/'link\.title':/g) || []).length === 3)
+// 录音卡页居中
+check('录音卡页用居中容器', /dshgn_paneInner dshgn_cardPane/.test(source))
+check('cardPane 有居中样式', /\.dshgn_cardPane\{max-width:760px;margin:0 auto/.test(source))
+
+// ── P2：云端章节跳转 ──────────────────────────────────────────────────────
+check('云端详情合并了 chapters', /chapters: Array\.isArray\(result\.chapters\) \? result\.chapters : \[\]/.test(source))
+check('章节区块渲染', /detail\.chapters\.map\(\(chapter, index\) =>/.test(source))
+check('章节是一整行按钮（能看出可以点）', /className: 'dshgn_chapter'/.test(source))
+check('点章节把秒数塞进 seekTo', /setSeekTo\(\{ seconds: chapter\.startMs \/ 1000, nonce: Date\.now\(\) \}\)/.test(source))
+check('AudioPlayer 接受 seekTo', /const \{ t, track, onTimeChange, seekTo \} = props/.test(source))
+check('seekTo 变化时写 currentTime', /el\.currentTime = target/.test(source))
+check('只给第一条音轨传 seekTo（多轨会一起跳）', /seekTo: index === 0 \? seekTo : null/.test(source))
+check('章节没有时间点时不显示时间', /typeof chapter\.startMs === 'number'/.test(source))
+check('章节文案三语齐全',
+  (source.match(/'cloud\.chapters':/g) || []).length === 3,
+  String((source.match(/'cloud\.chapters':/g) || []).length))
 
 // ── 第十一批：同一条再点一次收起（m11946）──────────────────────────────────
 check('openNote 支持 toggle', /const openNote = React\.useCallback\([\s\S]{0,400}async \(path, toggle = false\)/.test(source))
@@ -1625,6 +1785,192 @@ check('勾选跳过代码围栏里的待办', /if \(inFence\) continue[\s\S]{0,2
 check('勾选前先留版本快照', /await toggleTodo\(root, path, index, \{[\s\S]{0,120}snapshotNote\(root, rel\)/.test(hostSource || ''))
 check('编辑态不给点击回调（改内容要走保存）', /onToggleTodo: editing \? undefined : onToggleTodo/.test(source))
 check('勾完重读笔记（否则下次保存会冲掉）', /await openNote\(current\.path\)[\s\S]{0,200}t\('todo\.done'\)/.test(source))
+
+// ── 0.7.1：图标对调 ────────────────────────────────────────────────────────
+// 用户要求「链」按钮用链子图标、复制引用改成油漆刷。两者相邻，用同一个图标
+// 用户根本分不清哪颗是哪个。
+check('ICONS 里有油漆刷', typeof internals.ICONS.paintbrush === 'string' && internals.ICONS.paintbrush.length > 10)
+check('ICONS 里仍有链子', typeof internals.ICONS.link === 'string')
+check(
+  '链按钮用链子图标',
+  /title:\s*t\('action\.link'\)[\s\S]{0,400}?name:\s*'link'/.test(source),
+)
+check(
+  '复制引用用油漆刷图标',
+  /title:\s*t\('action\.copyRef'\)[\s\S]{0,400}?name:\s*'paintbrush'/.test(source),
+)
+
+// ── 0.7.1：「链」弹窗定位 / 拖动 / 点外关闭 / 动画 ─────────────────────────
+check('弹窗默认落在阅读区正中（top/left 各 50%）', /\.dshgn_linkPicker\{[^}]*top:50%[^}]*left:50%/.test(source))
+check(
+  '弹窗的包含块是阅读区（.dshgn_note 有 position:relative）',
+  /\.dshgn_note\{[^}]*position:relative/.test(source),
+)
+check(
+  '拖动偏移用 translate 而不是 transform（transform 要留给动画）',
+  /translate:\s*`calc\(-50% \+ \$\{linkPos\.x\}px\)/.test(source),
+)
+check('标题行当拖动手柄', /className:\s*'[^']*dshgn_linkPickerGrip[^']*'/.test(source))
+check('手柄上有 pointerdown 起拖', /onPointerDown:\s*startLinkDrag/.test(source))
+check(
+  '拖动监听挂在 window 上（甩出弹窗也能收到 pointerup）',
+  /window\.addEventListener\('pointermove',\s*onMove\)/.test(source) && /window\.removeEventListener\('pointermove',\s*onMove\)/.test(source),
+)
+check(
+  '点弹窗外关闭用捕获阶段 pointerdown',
+  /addEventListener\('pointerdown',\s*onDown,\s*true\)/.test(source),
+)
+check(
+  '点「链」按钮本身不算外部点击（否则先关再开像没反应）',
+  /closest\('\[data-role="link-toggle"\]'\)/.test(source),
+)
+check('关闭动画期间继续渲染（否则缩回动画看不到）', /linkOpen \|\| linkClosing/.test(source))
+check('弹窗有蹦出/缩回两组 keyframes', /@keyframes dshgn_pickerIn/.test(source) && /@keyframes dshgn_pickerOut/.test(source))
+check('关闭态挂 data-closing 驱动出场动画', /'data-closing':\s*linkClosing/.test(source))
+check(
+  '减少动效时弹窗不做动画',
+  /@media \(prefers-reduced-motion:reduce\)[\s\S]{0,400}\.dshgn_linkPicker[^{]*\{animation:none/.test(source),
+)
+
+// ── 0.7.1：链弹窗浅蓝配色 ─────────────────────────────────────────────────
+check('弹窗底色走 pickerBg 变量', /\.dshgn_linkPicker\{[^}]*background:var\(--dshgn-pickerBg\)/.test(source))
+check('搜索框底色走 pickerField 变量', /\.dshgn_linkQuery\{[^}]*background:var\(--dshgn-pickerField\)/.test(source))
+check('弹窗描边走 pickerLine 变量', /\.dshgn_linkPicker\{[^}]*border:[^;]*var\(--dshgn-pickerLine\)/.test(source))
+
+// ── 0.7.1：深色模式 ────────────────────────────────────────────────────────
+check('themeVars 接收 dark 参数', /function themeVars\(input, dark\)/.test(source))
+check(
+  '没选主题色时深色模式也要返回一套变量（否则开关打开界面还是白的）',
+  /const picked = parseHex\(input\)\s*\n\s*if \(picked === null && !wantDark\) return null/.test(source),
+)
+check('深色分支有独立的明度层次', /if \(wantDark\) \{/.test(source))
+check(
+  '深色下三栏明度差足够（mid 明显亮于 light）',
+  (() => {
+    const darkStart = source.indexOf('if (wantDark) {')
+    const darkBlock = source.slice(darkStart, source.indexOf('\n      return {', darkStart))
+    const mid = /'--dshgn-mid':\s*hslToHex\(hue,\s*tint\([^)]*\),\s*([\d.]+)\)/.exec(darkBlock)
+    const light = /'--dshgn-light':\s*hslToHex\(hue,\s*tint\([^)]*\),\s*([\d.]+)\)/.exec(darkBlock)
+    if (mid === null || light === null) return false
+    return Number(mid[1]) - Number(light[1]) > 0.05
+  })(),
+)
+check('深色下分隔线改用白色', /'--dshgn-lineOnDark':\s*'rgba\(255,255,255/.test(source))
+check('深色下「面」比底色亮（卡片不能用纯黑）', /'--dshgn-surface':\s*hslToHex/.test(source))
+check('设置页有深色开关（role=switch）', /role:\s*'switch'/.test(source) && /dshgn_switch/.test(source))
+check('深色开关单独一条保存路径', /\/settings',\s*\{[\s\S]{0,200}darkMode: value/.test(source))
+check('深色存失败要把开关拨回去', /setDark\(!value\)/.test(source))
+check(
+  '外部改了深色设置会同步过来（但不动正在编辑的草稿）',
+  /if \(draft === null\) setDark\(darkMode === true\)/.test(source),
+)
+
+// ── 0.7.1：关系图配色可自定义 ──────────────────────────────────────────────
+check('默认关系图色是很浅的蓝', internals.DEFAULT_GRAPH_COLOR === '#9dc6ef', String(internals.DEFAULT_GRAPH_COLOR))
+check('graphVars 输出三个层次', (() => {
+  if (typeof internals.graphVars !== 'function') return false
+  const v = internals.graphVars('#8fd3c7', false)
+  return v !== null && typeof v['--dshgn-graphNode'] === 'string' && typeof v['--dshgn-graphEdge'] === 'string' && typeof v['--dshgn-graphNodeOn'] === 'string'
+})())
+check('graphVars 坏值回落默认而不返回 null', (() => {
+  if (typeof internals.graphVars !== 'function') return false
+  const v = internals.graphVars('not-a-color', false)
+  return v !== null && v['--dshgn-graphNode'] !== undefined
+})())
+check('关系图连线用 graphEdge 变量', /\.dshgn_graphEdge\{[^}]*stroke:var\(--dshgn-graphEdge\)/.test(source))
+check('关系图节点用 graphNode 变量', /\.dshgn_graphDot\{[^}]*fill:var\(--dshgn-graphNode\)/.test(source))
+check('关系图高亮用 graphNodeOn 变量', /\.dshgn_graphEdge\[data-on="true"\]\{[^}]*stroke:var\(--dshgn-graphNodeOn\)/.test(source))
+check('关系图节点不再用品牌色（用户明确不要）', !/\.dshgn_graphDot\{[^}]*brand-primary/.test(source))
+check('设置页有关系图配色色板', /graphPresets\.map/.test(source))
+
+// ── 0.7.1：根 style 同时挂主题与关系图变量 ────────────────────────────────
+check('mergeStyles 能合并两组变量', (() => {
+  if (typeof internals.mergeStyles !== 'function') return false
+  const m = internals.mergeStyles({ a: '1' }, { b: '2' })
+  return m !== null && m.a === '1' && m.b === '2'
+})())
+check('mergeStyles 全 null 时返回 null（让 CSS 默认值生效）', (() => {
+  if (typeof internals.mergeStyles !== 'function') return false
+  return internals.mergeStyles(null, null) === null
+})())
+check('面板根节点同时合并主题与关系图变量', /mergeStyles\([\s\S]{0,300}graphVars\(/.test(source))
+check('根节点把 darkMode 传给 themeVars', /themeVars\([\s\S]{0,200}darkPreview\)/.test(source))
+
+// ── 0.7.1：检查版本更新 + 应用内升级 ──────────────────────────────────────
+check('导出了 UpdateCard', typeof internals.UpdateCard === 'function')
+check('设置页顶部就放检查更新', /h\(UpdateCard,[\s\S]{0,300}settings\.vault/.test(source))
+check('检查更新走 GET /update/check', /api\('\/update\/check'\)/.test(source))
+check('升级走 POST /update/apply', /api\('\/update\/apply',\s*\{\s*method:\s*'POST'\s*\}\)/.test(source))
+check('看到新版本才出现下载按钮', /available[\s\S]{0,400}t\('update\.download'\)/.test(source))
+check('离线单独提示，不报成「失败」', /t\('update\.offline'\)/.test(source))
+check(
+  '升级成功只提示重启，不假装已生效',
+  /t\('update\.applied'\)/.test(source),
+)
+
+// ── 0.7.1：署名 ────────────────────────────────────────────────────────────
+check('设置页底部有署名', /className:\s*'dshgn_credit'/.test(source) && /t\('about\.credit'\)/.test(source))
+check('署名文案就是 designed by Magicbaobao', internals.LEX.zh['about.credit'] === 'designed by Magicbaobao', internals.LEX.zh['about.credit'])
+check('CSS 有署名样式', /\.dshgn_credit\{/.test(source))
+
+// ── 0.7.1：三语文案齐全 ───────────────────────────────────────────────────
+for (const key of [
+  'link.dragHint', 'dark.title', 'dark.desc', 'dark.on', 'dark.off',
+  'graphColor.title', 'graphColor.desc',
+  'update.title', 'update.desc', 'update.check', 'update.checking', 'update.current',
+  'update.latest', 'update.upToDate', 'update.available', 'update.download',
+  'update.applying', 'update.applied', 'update.failed', 'update.offline', 'about.credit',
+]) {
+  check(`三语文案都有 ${key}`, internals.LEX.zh[key] !== undefined && internals.LEX.en[key] !== undefined && internals.LEX.nl[key] !== undefined)
+}
+
+
+// ── 0.7.2：定时器清理与 ref 化依赖（审计修复） ──────────────────────────
+//
+// 这批 bug 的共同形态是「父组件每次重渲染都换一个新函数身份，子组件的
+// useEffect 依赖它就每次重跑」——表现是每敲一个字就重新拉一遍列表、轮询
+// 永远等不到第一拍。这些断言检查的是接线本身，因为接线一断就静默退化成
+// 「能跑但一直在做无用功」，肉眼极难发现。
+{
+  // ① toast 计时器要存住句柄：连弹两条时，第一条的计时会把第二条提前抹掉。
+  check('showToast 有独立计时器 ref', /const toastTimer = React\.useRef\(null\)/.test(source))
+  check('showToast 建新计时器前先清旧的', /clearTimeout\(toastTimer\.current\)/.test(source))
+
+  // ② 三个反馈计时器（刷新转圈/变色保持/toast）都比「用户停留在此页」活得久，
+  //    点完刷新立刻切走就会 setState 到已卸载组件。
+  check('有卸载清理 ref 计时器的 effect', /clearTimeout\(refreshTimer\.current\)/.test(source) && /clearTimeout\(refreshSpinTimer\.current\)/.test(source))
+
+  // ③ 四个面板的 load 不能再依赖内联回调身份（否则每次父渲染都重拉整份数据）。
+  check('ConflictPane 用 onErrorRef', /onErrorRef\.current\(/.test(source))
+  check('CardPane 的 wifiRefresh 用 onErrorRef', /wifiRefresh[\s\S]{0,400}onErrorRef\.current/.test(source))
+  check('ImportPane 的轮询用 onRefreshRef', /onRefreshRef\.current\(\)/.test(source))
+  check('ImportPane 轮询只依赖 waiting', /\}, \[waiting\]\)/.test(source))
+  check('CardPane 轮询开关改成 runActive', /if \(!runActive\)/.test(source))
+
+  // ④ createCloudNote 通过 ref 调 openCloudNote：直接加依赖会撞 TDZ（声明在后），
+  //    不调又会拿到旧 selected，可能把另一篇云笔记收起。
+  check('createCloudNote 经 ref 调 openCloudNote', /openCloudNoteRef\.current = openCloudNote/.test(source) && /await openCloudNoteRef\.current\(/.test(source))
+
+  // ⑤ 两个 150ms / 1200ms 的收尾计时器也要能清。
+  check('closeLink 计时器有 ref', /closeLinkTimer/.test(source))
+  check('导出后复原按钮的计时器有 ref', /busyTimer/.test(source))
+
+  // ⑥ copyReference 不能直接点 status.vaultRoot：宿主/客户端版本错配时
+  //    status 会退化成 {}，undefined.endsWith 直接抛。
+  check('copyReference 先判 vaultRoot 是字符串', /typeof status\.vaultRoot === 'string'/.test(source))
+
+  // ⑦ AudioPlayer 不能假设 track.url 是字符串（它是导出组件，测试/宿主会直接渲染它）。
+  check('AudioPlayer 先判 track.url 是字符串', /typeof track\.url === 'string'/.test(source))
+
+  // ⑧ 关系图惯性：松手后继续滑，且能被用户下一次操作立刻止住。
+  check('关系图有惯性启动', /startInertia/.test(source))
+  check('惯性按时间指数衰减（不同刷新率滑行距离一致）', /Math\.exp\(-dt \/ TAU\)/.test(source))
+  check('速度滤波用的是最近一次位移而不是总平均', /drag\.vvx = drag\.vvx \* 0\.72 \+/.test(source))
+  check('按住不动再松手不甩出去', /Math\.exp\(-idle \/ 90\)/.test(source))
+  check('惯性帧循环可被取消', /cancelAnimationFrame\(inertiaRef\.current\)/.test(source))
+  check('拖图路过节点松手不打开笔记', /if \(movedRef\.current\)/.test(source))
+  check('拖拽时光标真的会变（靠 state 不是 ref）', /cursor: dragging \? 'grabbing' : 'grab'/.test(source))
+}
 
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)

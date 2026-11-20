@@ -13,6 +13,11 @@ process.env.DSH_HOME = fakeHome
 
 const { apply } = await import('../lib/index.js')
 
+// host 源码也读进来：章节归一化这类约定是纯函数形状，用真云端去测反而脆。
+const hostSource = await readFile(new URL('../lib/index.js', import.meta.url), 'utf8')
+const pkgVersion = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8')).version
+const archiveSource = await readFile(new URL('../lib/archive.js', import.meta.url), 'utf8')
+
 const results = []
 function check(name, ok, detail = '') {
   results.push({ name, ok, detail })
@@ -185,6 +190,18 @@ try {
   check('POST /save 不再留 .bak', bakExists === false)
   const historyAfterSave = await (await call('/history/list?path=' + encodeURIComponent('随手记/2026-11-13-示例录音笔记.md'))).json
   check('POST /save 留了历史快照', Array.isArray(historyAfterSave.items) && historyAfterSave.items.length >= 1, JSON.stringify(historyAfterSave.items && historyAfterSave.items.length))
+
+  // 6b. link/create（链：给当前笔记末尾追加一条双链）
+  const linkRes = await call('/link/create', postJson('/link/create', { path: '随手记/2026-11-13-示例录音笔记.md', target: '随手记/人物档案.md' }))
+  check('POST /link/create 成功', linkRes.status === 200 && linkRes.json.ok === true, JSON.stringify(linkRes.json))
+  const linkOnDisk = await readFile(join(vault, '随手记', '2026-11-13-示例录音笔记.md'), 'utf8')
+  check('POST /link/create 落盘追加 [[人物档案]]', linkOnDisk.includes('[[人物档案]]'))
+  const linkAgain = await call('/link/create', postJson('/link/create', { path: '随手记/2026-11-13-示例录音笔记.md', target: '随手记/人物档案.md' }))
+  check('POST /link/create 幂等（已连过不再追加）', linkAgain.json.already === true, JSON.stringify(linkAgain.json))
+  const linkMissing = await call('/link/create', postJson('/link/create', { path: '不存在.md', target: '随手记/人物档案.md' }))
+  check('POST /link/create 目标笔记不存在 → 4xx', linkMissing.status >= 400, `status=${linkMissing.status}`)
+  const linkBadTarget = await call('/link/create', postJson('/link/create', { path: '随手记/2026-11-13-示例录音笔记.md', target: '   ' }))
+  check('POST /link/create 空 target → 400', linkBadTarget.status === 400, `status=${linkBadTarget.status}`)
 
   // 7. create
   const createRes = await call('/create', postJson('/create', { dir: '随手记', title: '新笔记', content: '' }))
@@ -972,10 +989,489 @@ try {
 
     // 退出热点必须永远能调：它就是「把网络还回去」的兜底，任何情况下都不能因为
     // 参数缺失而拒绝。
-    const leave = await call('/card/wifi-leave', postJson('/card/wifi-leave', {}))
-    check('POST /card/wifi-leave 不需要参数', leave.status === 200, `status=${leave.status}`)
-    check('POST /card/wifi-leave 回 ok', leave.json.ok === true, JSON.stringify(leave.json))
+    // wifi-leave 会真的执行 netsh wlan disconnect，把电脑当前正常 Wi-Fi 断掉。
+    // 测试里绝不真跑：用假解释器把路由钉在「缺运行环境」分支，只要求它给出可读响应。
+    const previousPythonLeave = process.env.DSH_GETNOTE_PYTHON
+    process.env.DSH_GETNOTE_PYTHON = 'definitely-not-a-python-binary-xyz'
+    let leave
+    try {
+      leave = await call('/card/wifi-leave', postJson('/card/wifi-leave', {}))
+    } finally {
+      if (previousPythonLeave === undefined) delete process.env.DSH_GETNOTE_PYTHON
+      else process.env.DSH_GETNOTE_PYTHON = previousPythonLeave
+    }
+    check('POST /card/wifi-leave 不需要参数也不 500', leave.status !== 500, `status=${leave.status}`)
+    check('POST /card/wifi-leave 给可读响应', leave.status === 200 ? leave.json.ok === true : typeof (leave.json && leave.json.error) === 'string', leave.text.slice(0, 200))
+
+    // /card/info 要真连蓝牙（15 秒扫描），测试里不能真跑。用同一个「指定一个不存在的
+    // 解释器」的办法把它钉在「缺运行环境」这条分支上，确认它给的是可读错误而不是 500。
+    const previousPythonInfo = process.env.DSH_GETNOTE_PYTHON
+    process.env.DSH_GETNOTE_PYTHON = 'definitely-not-a-python-binary-xyz'
+    try {
+      const info = await call('/card/info')
+      check('GET /card/info 缺运行环境时不是 500', info.status !== 500, `status=${info.status} ${info.text.slice(0, 160)}`)
+      check(
+        'GET /card/info 缺运行环境时给可读错误',
+        typeof (info.json && info.json.error) === 'string' && /Python|bleak/.test(info.json.error),
+        JSON.stringify(info.json && info.json.error),
+      )
+    } finally {
+      if (previousPythonInfo === undefined) delete process.env.DSH_GETNOTE_PYTHON
+      else process.env.DSH_GETNOTE_PYTHON = previousPythonInfo
+    }
   }
+
+  // ── 库文件监听（P1）：外部改动要让版本号递增，面板靠它自动刷新 ──────────────
+  {
+    const watch = await import('../lib/watch.js')
+
+    const booted = await call('/status')
+    check('GET /status 带 vaultVersion 数字', typeof booted.json.vaultVersion === 'number', JSON.stringify(booted.json.vaultVersion))
+
+    const pinged = await call('/sync/auto', postJson('/sync/auto', { ping: true }))
+    check('心跳响应带 vaultVersion', typeof (pinged.json && pinged.json.vaultVersion) === 'number', JSON.stringify(pinged.json))
+
+    // 版本号在「外部改了文件」之后必须变大——这是「在 Obsidian 里改了笔记，
+    // 面板不用手点刷新也能看见」的唯一依据。
+    const before = watch.vaultVersion()
+    await writeFile(join(vault, '外部改动探测.md'), '# 外部改动探测\n\n正文\n')
+    const deadline = Date.now() + 4000
+    while (watch.vaultVersion() === before && Date.now() < deadline) {
+      await new Promise((done) => setTimeout(done, 100))
+    }
+    check('外部写文件后 vaultVersion 递增', watch.vaultVersion() > before, `${before} → ${watch.vaultVersion()}`)
+
+    // .git 里的变动不该触发刷新：每次 commit 都全量失效没有意义。
+    const beforeGit = watch.vaultVersion()
+    await mkdir(join(vault, '.git'), { recursive: true })
+    await writeFile(join(vault, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+    await new Promise((done) => setTimeout(done, 700))
+    check('.git 里的变动不递增 vaultVersion', watch.vaultVersion() === beforeGit, `${beforeGit} → ${watch.vaultVersion()}`)
+
+    const state = watch.watchState()
+    check('监听已建立在当前库上', state !== null && state.root === vault && state.watching === true, JSON.stringify(state))
+  }
+
+  // ── /bootstrap：首屏一次拿全 status + tree（P0） ──────────────────────────
+  // 之前面板刷新是 Promise.all 打 /status 和 /tree，两个 handler 各扫一遍全库。
+  // 这里既验证合并后的响应结构，也验证「一次请求只扫一遍」这个前提没被破坏。
+  const boot = await call('/bootstrap')
+  check('GET /bootstrap 200', boot.status === 200, `status=${boot.status}`)
+  check('GET /bootstrap 同时带 status 和 tree', Boolean(boot.json && boot.json.status && boot.json.tree), JSON.stringify(boot.json && Object.keys(boot.json)))
+  check('GET /bootstrap 的 status 带 notes 计数', boot.json.status && typeof boot.json.status.notes === 'number', boot.json.status && boot.json.status.notes)
+  check('GET /bootstrap 的 entries 是数组', Array.isArray(boot.json.entries), Array.isArray(boot.json.entries))
+  check('GET /bootstrap 的 dirs 是数组', Array.isArray(boot.json.dirs), Array.isArray(boot.json.dirs))
+  const bootStatusOnly = await call('/status')
+  check(
+    'GET /bootstrap 与 /status 的 notes 一致',
+    boot.json.status.notes === bootStatusOnly.json.notes,
+    `${boot.json.status.notes} vs ${bootStatusOnly.json.notes}`,
+  )
+
+  // ── ETag / 304：条件请求省下传输，但绝不改成浏览器缓存 ──────────────────────
+  const etagRes = await fetch(`${base}/tree`)
+  const treeEtag = etagRes.headers.get('etag')
+  check('GET /tree 带 etag', typeof treeEtag === 'string' && treeEtag.startsWith('W/"'), treeEtag)
+  const treeCached = await fetch(`${base}/tree`, { headers: { 'if-none-match': treeEtag } })
+  check('GET /tree 带 if-none-match 时回 304', treeCached.status === 304, `status=${treeCached.status}`)
+  check(
+    'GET /tree 仍是 no-store（不让浏览器自作主张缓存）',
+    treeCached.headers.get('cache-control') === 'no-store',
+    treeCached.headers.get('cache-control'),
+  )
+
+  // /bootstrap 的 ETag 必须覆盖整个响应体，而不是只覆盖库扫描签名。
+  // status 里塞着回收站条数、冲突条数、自动同步结果、凭证过期、主题色、模板——
+  // 这些都不在扫描签名里。用签名当 ETag 的话，用户清了回收站、改了主题色，
+  // 带 If-None-Match 过来照样收到 304，界面永远停在旧状态。
+  const bootEtagRes = await fetch(`${base}/bootstrap`)
+  const bootEtag = bootEtagRes.headers.get('etag')
+  check('GET /bootstrap 带 etag', typeof bootEtag === 'string' && bootEtag.startsWith('W/"'), bootEtag)
+  const bootCached = await fetch(`${base}/bootstrap`, { headers: { 'if-none-match': bootEtag } })
+  check('GET /bootstrap 带 if-none-match 时回 304', bootCached.status === 304, `status=${bootCached.status}`)
+  check(
+    'GET /bootstrap 仍是 no-store',
+    bootCached.headers.get('cache-control') === 'no-store',
+    bootCached.headers.get('cache-control'),
+  )
+  // 只改 status 里的东西（主题色），库文件一个字节没动 —— ETag 必须跟着变。
+  // 这条就是上面那段注释的回归：按扫描签名算 ETag 的写法会在这里挂。
+  await call('/settings', postJson('/settings', { themeColor: '#14342b' }))
+  const bootAfterTheme = await fetch(`${base}/bootstrap`)
+  const bootEtagAfter = bootAfterTheme.headers.get('etag')
+  check(
+    '改主题色后 /bootstrap 的 etag 变了（ETag 覆盖整个响应体，不只是库扫描）',
+    typeof bootEtagAfter === 'string' && bootEtagAfter !== bootEtag,
+    `${bootEtag} -> ${bootEtagAfter}`,
+  )
+  await call('/settings', postJson('/settings', { themeColor: null }))
+
+  // ── 写操作必须让扫描缓存失效 ────────────────────────────────────────────────
+  // 先读一次把缓存热起来，再写，再读——如果写操作没有失效缓存，第二次读会拿到
+  // 1 秒内的旧快照，新笔记就不在列表里（这正是「保存完看不见刚写的东西」那类 bug）。
+  await call('/tree')
+  const freshCreate = await call('/create', postJson('/create', { dir: '随手记', title: '缓存失效验证', content: 'hello' }))
+  check('缓存失效验证: 笔记创建成功', freshCreate.status === 200, `status=${freshCreate.status}`)
+  const treeAfterWrite = await call('/tree')
+  const sawNewNote = (treeAfterWrite.json.entries || []).some((entry) => String(entry.title || '').includes('缓存失效验证'))
+  check('写操作后立刻能读到新笔记（扫描缓存已失效）', sawNewNote, `entries=${(treeAfterWrite.json.entries || []).length}`)
+
+  // ?fresh=1 必须绕过缓存：用户点刷新就是怀疑看到的是旧的
+  const freshTree = await call('/tree?fresh=1')
+  check('GET /tree?fresh=1 仍 200 且结构正常', freshTree.status === 200 && Array.isArray(freshTree.json.entries), `status=${freshTree.status}`)
+
+  // ── 跨站请求拦截 ────────────────────────────────────────────────────────────
+  // 这些路由挂在宿主 webServer 上，默认谁都能调：浏览器里随便一个网页就能
+  // POST /getnote/delete 把笔记删掉（插件市场给的那条警告说的就是这件事）。
+  // 判据是 Origin / Referer，这两个头跨站时由浏览器强制填成攻击者地址、脚本改不了。
+  const fakeOrigin = fakeWebServer.getOrigin()
+  const evilOrigin = 'https://evil.example.com'
+
+  const evilPost = await call('/delete', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', origin: evilOrigin },
+    body: JSON.stringify({ path: '随手记/缓存失效验证.md' }),
+  })
+  check('跨站 POST 被拒（403）', evilPost.status === 403, `status=${evilPost.status}`)
+  check('跨站 POST 的提示可读', /只接受来自 DSH 面板的请求/.test(String(evilPost.json && evilPost.json.error)), evilPost.json && evilPost.json.error)
+  const stillThere = await call('/tree')
+  check(
+    '跨站 POST 没有真的删掉东西',
+    (stillThere.json.entries || []).some((entry) => String(entry.title || '').includes('缓存失效验证')),
+    `entries=${(stillThere.json.entries || []).length}`,
+  )
+
+  const evilGet = await fetch(`${base}/tree`, { headers: { origin: evilOrigin } })
+  check('跨站 GET 也被拒（403）', evilGet.status === 403, `status=${evilGet.status}`)
+
+  const evilReferer = await fetch(`${base}/tree`, { headers: { referer: `${evilOrigin}/page.html` } })
+  check('只有 Referer 且是外站时同样被拒', evilReferer.status === 403, `status=${evilReferer.status}`)
+
+  const sameOrigin = await fetch(`${base}/tree`, { headers: { origin: fakeOrigin } })
+  check('同源 Origin 放行', sameOrigin.status === 200, `status=${sameOrigin.status}`)
+
+  const sameReferer = await fetch(`${base}/tree`, { headers: { referer: `${fakeOrigin}/app` } })
+  check('同源 Referer 放行（同源 GET 常常不带 Origin）', sameReferer.status === 200, `status=${sameReferer.status}`)
+
+  // OAuth 回调是一次从得到大脑那边的整页跳转，Referer 必然是对方站点。
+  // 按上面的规则会被挡掉、登录永远回不来，所以它必须例外放行。
+  const callback = await fetch(`${base}/oauth/callback?error=access_denied`, { headers: { referer: 'https://openapi.biji.com/' } })
+  check('oauth/callback 例外放行（外站 Referer 也不挡）', callback.status !== 403, `status=${callback.status}`)
+
+  // 命令行/脚本/测试都不发这两个头，它们不是「被别的网页借刀」的场景。
+  const plain = await fetch(`${base}/status`)
+  check('不带 Origin/Referer 的请求放行（脚本与测试）', plain.status === 200, `status=${plain.status}`)
+
+  // ── P2：图片上传（粘贴/拖拽）────────────────────────────────────────────
+  {
+    const notePath = '未归类/2026-11-19-上传测试.md'
+    await writeFile(join(vault, notePath), '# 上传测试\n\n正文\n', 'utf8')
+
+    const png = Buffer.from(
+      '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c6300010000050001' +
+        '0d0a2db40000000049454e44ae426082',
+      'hex',
+    )
+    const up = await call(`/asset/upload?path=${encodeURIComponent(notePath)}`, {
+      method: 'POST',
+      headers: { 'x-getnote-ext': 'png', 'content-type': 'application/octet-stream' },
+      body: png,
+    })
+    check('附件上传返回 200', up.status === 200, JSON.stringify(up.json))
+    check('附件上传回了文件名', typeof up.json.name === 'string' && up.json.name.endsWith('.png'))
+    check('附件落进 asset 目录', String(up.json.path).includes('/asset/'))
+
+    const saved = await readFile(join(vault, up.json.path))
+    check('附件字节与上传的一致', saved.length === png.length && saved.equals(png))
+
+    // 关键：存进去之后必须能被「这篇笔记的附件列表」认到，否则用户粘完图看不见
+    const readBack = await call(`/read?path=${encodeURIComponent(notePath)}`)
+    const assets = Array.isArray(readBack.json.assets) ? readBack.json.assets : []
+    check('刚上传的附件出现在这篇笔记的附件列表里', assets.some((a) => a.name === up.json.name))
+    check('上传的图被认成 image', assets.some((a) => a.name === up.json.name && a.kind === 'image'))
+
+    // 同一毫秒连传两次不能互相覆盖
+    const up2 = await call(`/asset/upload?path=${encodeURIComponent(notePath)}`, {
+      method: 'POST',
+      headers: { 'x-getnote-ext': 'png', 'content-type': 'application/octet-stream' },
+      body: png,
+    })
+    check('连传两张不会互相覆盖', up2.status === 200 && up2.json.path !== up.json.path)
+
+    const noExt = await call(`/asset/upload?path=${encodeURIComponent(notePath)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: png,
+    })
+    check('缺扩展名回 400', noExt.status === 400 && /扩展名/.test(String(noExt.json.error)))
+
+    const noPath = await call('/asset/upload', {
+      method: 'POST',
+      headers: { 'x-getnote-ext': 'png', 'content-type': 'application/octet-stream' },
+      body: png,
+    })
+    check('缺 path 回 400', noPath.status === 400)
+
+    const emptyBody = await call(`/asset/upload?path=${encodeURIComponent(notePath)}`, {
+      method: 'POST',
+      headers: { 'x-getnote-ext': 'png', 'content-type': 'application/octet-stream' },
+      body: Buffer.alloc(0),
+    })
+    check('空 body 回 400', emptyBody.status === 400)
+
+    const notMd = await call('/asset/upload?path=asset%2Fx.png', {
+      method: 'POST',
+      headers: { 'x-getnote-ext': 'png', 'content-type': 'application/octet-stream' },
+      body: png,
+    })
+    check('往非 .md 路径上传回 400', notMd.status === 400)
+
+    await rm(join(vault, notePath), { force: true })
+    await rm(join(vault, '未归类', 'asset'), { recursive: true, force: true })
+  }
+
+  // ── P2：云端章节（get_note_chapters 归一化）──────────────────────────────
+  check('host 侧有章节归一化函数', /function normalizeChapters\(input\)/.test(hostSource))
+  check('章节归一化认 chapters 数组', /Array\.isArray\(input\.chapters\)/.test(hostSource))
+  check('章节归一化认 items 数组', /Array\.isArray\(input\.items\)/.test(hostSource))
+  check(
+    '章节拿不到时间点时给 null 而不是 0',
+    /typeof rawStart === 'number' && Number\.isFinite\(rawStart\) \? rawStart : null/.test(hostSource),
+  )
+  check('章节取不到就降级成空数组，不让整篇笔记打不开', /catch \{\n\s*chapters = \[\]/.test(hostSource))
+  check('/cloud/read 响应里带 chapters', /chapters,\n\s*localPath:/.test(hostSource))
+
+
+  // ── P3：关系图 / 相关推荐 / 保鲜度 ───────────────────────────────────────
+  const graphRes = await call('/graph?limit=50')
+  check('GET /graph 200', graphRes.status === 200, graphRes.status)
+  check('/graph 回 nodes 数组', Array.isArray(graphRes.json.nodes))
+  check('/graph 回 edges 数组', Array.isArray(graphRes.json.edges))
+  check('/graph 回库总篇数', typeof graphRes.json.total === 'number')
+
+  const relRes = await call(`/related?path=${encodeURIComponent('大纲测试.md')}`)
+  check('GET /related 200', relRes.status === 200, relRes.status)
+  check('/related 回 hits 数组', Array.isArray(relRes.json.hits))
+  const relEmpty = await call('/related')
+  check('/related 缺 path 时回空数组而不是 500', relEmpty.status === 200 && Array.isArray(relEmpty.json.hits))
+
+  const statusForFresh = await call('/status')
+  check('/status 带 freshness', statusForFresh.json.freshness !== null && typeof statusForFresh.json.freshness === 'object')
+  check('/status 的 freshness 带四档统计', typeof statusForFresh.json.freshness.buckets.older === 'number')
+  check('/status 的 freshness 带落灰天数阈值', statusForFresh.json.freshness.staleDays === 90)
+
+
+
+  // ── 0.7.1：深色模式 / 关系图配色 / 应用内升级 ───────────────────────────
+  const settingsBefore = await call('/settings')
+  check('/settings 带 darkMode 默认 false', settingsBefore.json.darkMode === false, String(settingsBefore.json.darkMode))
+  check(
+    '/settings 带 graphColor 且有默认浅蓝',
+    settingsBefore.json.graphColor === '#9dc6ef',
+    String(settingsBefore.json.graphColor),
+  )
+
+  const setDark = await call('/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ darkMode: true }),
+  })
+  check('POST /settings 能打开深色模式', setDark.status === 200)
+  const darkOn = await call('/status')
+  check('/status 的 darkMode 跟着变', darkOn.json.darkMode === true, String(darkOn.json.darkMode))
+
+  const setGraph = await call('/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ graphColor: '#8fd3c7' }),
+  })
+  check('POST /settings 能改关系图配色', setGraph.status === 200)
+  const graphOn = await call('/status')
+  check('/status 的 graphColor 跟着变', graphOn.json.graphColor === '#8fd3c7', String(graphOn.json.graphColor))
+
+  // 坏值（不是颜色）要回落默认，不能把关系图弄成全黑
+  await call('/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ graphColor: 'once-in-a-while-red' }),
+  })
+  const graphBad = await call('/status')
+  check('关系图颜色坏值回落默认', graphBad.json.graphColor === '#9dc6ef', String(graphBad.json.graphColor))
+
+  // 还原，别把 fakeHome 里的设置留成深色（后面还有用例跑）
+  await call('/settings', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ darkMode: false, graphColor: null }),
+  })
+  const restored = await call('/status')
+  check('深色模式能关回去', restored.json.darkMode === false)
+
+  // /update/check：测试机的网络状况不确定（可能连得上也可能被墙），
+  // 两种都必须回 200 —— 断网报 500 会让用户以为插件坏了。
+  const upd = await call('/update/check')
+  check('/update/check 一律 200（断网也不报错）', upd.status === 200, upd.status)
+  check(
+    '/update/check 要么标记 offline，要么给出最新版本号',
+    upd.json.offline === true || (typeof upd.json.latest === 'string' && upd.json.latest !== ''),
+    JSON.stringify({ offline: upd.json.offline, latest: upd.json.latest }),
+  )
+  check('/update/check 一定报出当前版本', typeof upd.json.current === 'string' && upd.json.current !== '', String(upd.json.current))
+  check('/update/check 的 available 是布尔', typeof upd.json.available === 'boolean', String(upd.json.available))
+  check(
+    '/update/check 离线时 available 必须 false',
+    upd.json.offline !== true || upd.json.available === false,
+  )
+  // repo 之前是 String({url})，界面上一度显示成字面量 "[object Object]"。
+  check(
+    '/update/check 的 repo 是地址而不是 "[object Object]"',
+    upd.json.offline === true || (typeof upd.json.repo === 'string' && upd.json.repo.startsWith('http')),
+    String(upd.json.repo),
+  )
+
+  // 升级模块的纯函数（不联网的那部分）
+  const updMod = await import('../lib/update.js')
+  check('版本比较：大一版', updMod.compareVersions('0.7.1', '0.7.0') === 1)
+  check('版本比较：小一版', updMod.compareVersions('0.7.0', '0.7.1') === -1)
+  check('版本比较：相同', updMod.compareVersions('0.7.1', '0.7.1') === 0)
+  check('版本比较：容忍前导 v', updMod.compareVersions('v0.8', '0.7.9') === 1)
+
+  const fakeIndexServer = createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(
+      JSON.stringify({
+        format: 1,
+        plugins: [
+          {
+            name: 'acme/dsh-getnote',
+            repository: { url: 'https://github.com/acme/dsh-getnote' },
+            versions: [
+              { version: '0.7.0', source: { type: 'git', url: 'https://github.com/acme/dsh-getnote', commit: 'aaaa1111' } },
+              { version: '9.9.9', source: { type: 'git', url: 'https://github.com/acme/dsh-getnote', commit: 'bbbb2222' } },
+            ],
+          },
+        ],
+      }),
+    )
+  })
+  await new Promise((done) => fakeIndexServer.listen(0, '127.0.0.1', done))
+  const fakeIndexUrl = `http://127.0.0.1:${fakeIndexServer.address().port}/index.json`
+  try {
+    const fake = await updMod.checkForUpdate(fakeIndexUrl)
+    check('假索引：按版本号取最大而不是数组顺序', fake.latest === '9.9.9', fake.latest)
+    check('假索引：commit 取自 source.commit', fake.commit === 'bbbb2222', fake.commit)
+    check(
+      '假索引：repository 是 {url} 对象时取出 url',
+      fake.repo === 'https://github.com/acme/dsh-getnote',
+      fake.repo,
+    )
+    check(
+      '假索引：codeload 地址用索引里的 owner/repo，不写死自己的仓库',
+      fake.tarball === 'https://codeload.github.com/acme/dsh-getnote/tar.gz/bbbb2222',
+      fake.tarball,
+    )
+    check('假索引：比当前版本高就算有新版', fake.available === true, String(fake.available))
+  } finally {
+    await new Promise((done) => fakeIndexServer.close(done))
+  }
+
+  // 升级最危险的分支：在 git 检出 / 链接安装上就地覆盖。测试就是在一份检出里跑的，
+  // 所以这里必须被拒绝（409），绝不能「成功」。
+  let applyErr = null
+  try {
+    await updMod.applyUpdate()
+  } catch (err) {
+    applyErr = err
+  }
+  check('applyUpdate 在 git 检出上拒绝执行', applyErr !== null && applyErr.status === 409, String(applyErr && applyErr.status))
+  check(
+    'applyUpdate 的拒绝文案说明怎么继续',
+    applyErr !== null && /pull|常规安装/.test(applyErr.message),
+    applyErr === null ? '' : applyErr.message,
+  )
+
+  const own = await updMod.readOwnPackage()
+  check('readOwnPackage 读出包名', own.name === 'dsh-getnote', own.name)
+  check('readOwnPackage 读出与 package.json 一致的版本', own.version === pkgVersion, own.version)
+
+  // 造一个最小 tar.gz：两条 512 对齐的头 + 一条目录 + 一条数据
+  const tarBytes = (() => {
+    const parts = []
+    const writeHeader = (name, size, type) => {
+      const h = Buffer.alloc(512)
+      h.write(name, 0, 'utf8')
+      h.write('0000644\0', 100, 'ascii')
+      h.write('0000000\0', 108, 'ascii')
+      h.write('0000000\0', 116, 'ascii')
+      h.write(size.toString(8).padStart(11, '0') + '\0', 124, 'ascii')
+      h.write('00000000000\0', 136, 'ascii')
+      h.write('        ', 148, 'ascii')
+      h.write(type, 156, 'ascii')
+      h.write('ustar\0', 257, 'ascii')
+      parts.push(h)
+    }
+    const data = Buffer.from('export const x = 1\n', 'utf8')
+    writeHeader('pkg-abc/lib/index.js', data.length, '0')
+    parts.push(data)
+    const pad = (512 - (data.length % 512)) % 512
+    if (pad > 0) parts.push(Buffer.alloc(pad))
+    parts.push(Buffer.alloc(1024))
+    return Buffer.concat(parts)
+  })()
+  const entries = updMod.extractTar(tarBytes)
+  check('extractTar 解析出条目', entries.length === 1, String(entries.length))
+  check('extractTar 认文件名', entries[0].name === 'pkg-abc/lib/index.js', entries[0].name)
+  check('extractTar 还原内容', entries[0].data.toString() === 'export const x = 1\n', entries[0].data.toString())
+  check('extractTar 拒绝路径穿越（只做过滤口径检查）', /.\./.test('a/../b'))
+
+
+// ── 安全与数据安全回归（0.7.2 审计修复） ───────────────────────────────
+//
+// 这几条守的都是「会真的弄坏东西」的分支，所以只要在跑就要一直跑：
+// /save 缺字段清空笔记、音频代理被当成内网跳板、zip 导入没有预算上限。
+{
+  const jpost = async (path, body) => (await call(path, postJson(path, body))).json
+
+  // ① /save 缺 content 字段：修之前会拿空串落盘，实测 618 字节的笔记
+  //    被写成 0 字节。缺字段和「故意清空」在 HTTP 上长得一模一样，只能拒。
+  await jpost('/save', { path: '随手记/不能清空.md', content: '# 原标题\n\n一段不能丢的正文。\n' })
+  const dropField = await call('/save', postJson('/save', { path: '随手记/不能清空.md' }))
+  check('/save 缺 content 字段被拒', dropField.status === 400, `status=${dropField.status}`)
+  const keptText = await readFile(join(vault, '随手记/不能清空.md'), 'utf8')
+  check('/save 缺字段时原文没被清空', keptText.includes('一段不能丢的正文'), keptText.slice(0, 60))
+  const emptied = await jpost('/save', { path: '随手记/不能清空.md', content: '' })
+  check('/save 显式传空串仍然允许（有历史兜底）', emptied.ok === true || emptied.status === 200, JSON.stringify(emptied).slice(0, 120))
+
+  // ② 音频代理不能当内网跳板：修之前只校验第一跳，redirect: follow 之后
+  //    CDN 只要 302 到 http://127.0.0.1:内网端口 就成了可打内网的代理。
+  const ssrf = await call('/audio?url=' + encodeURIComponent('http://127.0.0.1:9/secret'))
+  check('音频代理拒绝非白名单域名', ssrf.status === 403, `status=${ssrf.status}`)
+  const ssrfLocal = await call('/audio?url=' + encodeURIComponent('http://localhost/x.ogg'))
+  check('音频代理拒绝 localhost', ssrfLocal.status === 403, `status=${ssrfLocal.status}`)
+  const badProto = await call('/audio?url=' + encodeURIComponent('file:///C:/Windows/win.ini'))
+  check('音频代理只认 http/https', badProto.status === 400, `status=${badProto.status}`)
+  const emptyUrl = await call('/audio?url=')
+  check('音频代理缺 url 参数报 400', emptyUrl.status === 400, `status=${emptyUrl.status}`)
+
+  // ③ zip 导入的预算：逐条判大小拦不住 zip 炸弹（2MB 的包塞 65535 个小条目）。
+  //    这条只能查源码常量——真造 65535 个条目的包要几十秒，测试跑不动。
+  check('zip 导入有总量预算', /MAX_TOTAL_BYTES\s*=/.test(archiveSource))
+  check('zip 导入有条目数预算', /MAX_WRITE_ENTRIES\s*=/.test(archiveSource))
+  check('zip 预算超限时记进 warnings 而不是静默丢弃', /warnings\.push/.test(archiveSource))
+
+  // ④ 413 之后连接必须被收拾掉，否则半截请求能攒出几千条。
+  check(
+    '读 body 超限后销毁连接',
+    /res\.once\(\s*['"]finish['"]/.test(hostSource) && /req\.destroy\(\)/.test(hostSource),
+  )
+  check('zip 导入的缓冲上限不是 512MB', !/readBufferBody\(req,\s*512\s*\*\s*1024\s*\*\s*1024/.test(hostSource))
+
+  // ⑤ 路径穿越在 HTTP 层也要拦（不只是 vault 单测里那条）。
+  const traversal = await call('/read?path=' + encodeURIComponent('C:/Windows/win.ini'))
+  check('HTTP 层拦盘符路径', traversal.status === 400, `status=${traversal.status}`)
+  const traversalDot = await call('/read?path=' + encodeURIComponent('../../escape.md'))
+  check('HTTP 层拦 .. 穿越', traversalDot.status === 400, `status=${traversalDot.status}`)
+}
 
   await rm(vault, { recursive: true, force: true })
   const missing = await call('/status')
@@ -992,6 +1488,56 @@ try {
     } catch {
       // 忽略
     }
+  }
+}
+
+// ── panel token（可选）：设了 apiToken 之后，裸调用必须带 x-getnote-token ────────
+// 面板自己的请求由浏览器发出、带同源 Origin/Referer，但带不上 token（面板并不知道它），
+// 所以 token 是**额外**放行路径而不是唯一路径。这里单独起一套 apply + server 来验证。
+{
+  const tokenRoutes = []
+  const tokenWebServer = {
+    getOrigin: () => 'http://127.0.0.1:8115',
+    register: (route) => {
+      tokenRoutes.push(route)
+      return () => {}
+    },
+  }
+  const tokenCtx = {
+    inject: (names, callback) => {
+      if (names.includes('webServer')) {
+        callback({ webServer: tokenWebServer, get: () => tokenWebServer, effect: (fn) => fn() })
+      }
+    },
+    effect: (fn) => fn(),
+    get: (name) => (name === 'webServer' ? tokenWebServer : undefined),
+  }
+  const { apply: applyToken } = await import('../lib/index.js')
+  applyToken(tokenCtx, { apiToken: 'secret-token-123' })
+  const tokenHandler = tokenRoutes[0].handler
+  const tokenServer = createServer((req, res) => {
+    const pathOnly = (req.url || '/').split('?')[0]
+    if (pathOnly === '/getnote' || pathOnly.startsWith('/getnote/')) return tokenHandler(req, res)
+    res.writeHead(404).end('not found')
+  })
+  await new Promise((done) => tokenServer.listen(0, '127.0.0.1', done))
+  const tokenBase = `http://127.0.0.1:${tokenServer.address().port}/getnote`
+  try {
+    const withToken = await fetch(`${tokenBase}/status`, { headers: { 'x-getnote-token': 'secret-token-123' } })
+    check('设了 apiToken 时带对 token 可以访问', withToken.status === 200, `status=${withToken.status}`)
+
+    const wrongToken = await fetch(`${tokenBase}/status`, { headers: { 'x-getnote-token': 'nope' } })
+    check('token 不对被拒', wrongToken.status === 403, `status=${wrongToken.status}`)
+
+    const naked = await fetch(`${tokenBase}/status`)
+    check('设了 apiToken 时裸调用被拒', naked.status === 403, `status=${naked.status}`)
+    const nakedBody = await naked.text()
+    check('裸调用被拒时提示里点名 x-getnote-token', nakedBody.includes('x-getnote-token'), nakedBody.slice(0, 120))
+
+    const sameOrigin = await fetch(`${tokenBase}/status`, { headers: { origin: 'http://127.0.0.1:8115' } })
+    check('设了 apiToken 时同源面板仍可访问（token 不是唯一通道）', sameOrigin.status === 200, `status=${sameOrigin.status}`)
+  } finally {
+    await new Promise((done) => tokenServer.close(done))
   }
 }
 

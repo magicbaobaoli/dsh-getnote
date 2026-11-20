@@ -32,7 +32,34 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 静态检查 + 六套离线测试。单独一个 job 且带 Node 版本矩阵：
+  # engines 声明的是 "^22.19 || >=24"，只在 24 上跑等于没验证过 22。
+  # 索引 job 用 needs 依赖它 —— 索引指向一个跑不起来的东西没有意义。
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19', '24']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # 先做静态检查：语法错、LEX 漏键、CRLF 混入这些问题在这里就该拦下，
+      # 不要等到六套测试跑完才在某一套里以诡异的方式失败。
+      - name: 静态检查
+        run: node scripts/lint.mjs
+
+      - name: 跑六套离线测试
+        run: node scripts/test-all.mjs
+
   index:
+    needs: test
     runs-on: ubuntu-latest
     outputs:
       index-ok: ${{ steps.build.outcome }}
@@ -43,18 +70,6 @@ jobs:
           # 显式落到 main：打 tag 触发时 checkout 默认是 detached HEAD，
           # 后面那次 `git commit` + `git push` 会直接失败（"not currently on a branch"）。
           ref: main
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-
-      - name: 跑一遍离线测试（索引指向一个跑不起来的东西没有意义）
-        run: |
-          for t in vault sync host client archive history; do
-            echo "::group::$t"
-            node "test/$t.test.mjs"
-            echo "::endgroup::"
-          done
 
       - id: build
         name: 生成 index.json

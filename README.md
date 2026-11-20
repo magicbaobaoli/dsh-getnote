@@ -54,6 +54,10 @@
   用户看到列表里有同名项，第一反应就是要改它
 - **Obsidian 双链**：正文里的 `[[另一篇笔记]]` / `[[目标|显示文字]]` 是可点的，点了直接跳到那篇笔记；
   `![[图片.png]]` 会就地显示图片（按文件名在本文附件里找）
+- **笔记头的「链」按钮**：在编辑与复制引用之间（图标是链子，复制引用是油漆刷——两个都画链子的话挨在一起分不清哪个是哪个）。
+  点开是一个弹在最右栏居中、可按住拖走、点外面就收起的小窗，选中目标后自动在正文末尾追加
+  `[[对方标题]]` 并重读，双链立刻可用。只连单向（反向关系图会自动画出来），已连过的不重复追加，
+  写入走版本历史不留 `.bak`
 - 编辑保存（不留 `.bak`：保存前的内容已经进版本历史，多留一份副本只会在库里堆看不见的垃圾）、
   新建（`YYYY-MM-DD-标题.md`）、删除进 `.trash/`
 - **回收站页签**：删除的笔记能看见、能一键恢复（撞名时自动改名，绝不覆盖）、能永久清空
@@ -124,6 +128,18 @@
 - **再点一次就收起**：中栏里已经打开的那条笔记，再点一次就收起，右栏回到空白。
   笔记页与云端页都支持（只作用于列表卡片的点击——新建后自动打开、保存后刷新详情这些
   内部动作仍然是「打开」，在那里折起来是 bug 而不是功能）
+- **深色模式**：设置页「主题色」卡里一个开关，切换立即生效并落盘。明度是按主题色算出来的
+  （左栏最深、中栏次之、右栏最浅，栏间必须看得出层次），不是简单反色。
+- **关系图配色**：同样在「主题色」卡里，默认是很浅的蓝 `#9dc6ef`。**只让你选一个颜色**，
+  节点 / 连线 / 悬停高亮三个层次由代码推导，且连线永远比节点浅——连线是背景结构，
+  节点才是内容，反过来整张图会变成一片网格。
+- **应用内升级**：设置页最上面一张「检查版本更新」卡。读发布索引 → 比对版本 → 有新版就
+  下载源码包、备份旧版、覆盖写回，提示重启 DSH。零依赖零构建所以这条路走得通（发布物就是
+  `.js` 本身，不需要 install 也不需要编译）。**链接安装与 git 检出会被拒绝**（判据：目录是符号链接，
+  或目录里有 `.git`）——覆盖等于冲掉未提交的改动。注意 Node 的 ESM 解析会先 resolve 符号链接，
+  所以光比 `realpath` 判不出来，`.git` 那条是必需的；发布包里不含 `.git`，正常安装不受影响。
+  升级前旧版整体备份到 `$DSH_HOME/dsh-getnote/update-backup/`；
+  只写包里真实存在的文件、不删别的。断网单独识别成 `offline`，不会报成「升级失败」。
 - **三种界面语言**：中文 / English / Nederlands，设置页一张「语言」卡就能切，切换即刻生效。
   「自动」跟随 DSH 自己的语言；选了具体语言就以那个为准，不会被宿主语言顶回去
 
@@ -220,6 +236,7 @@ plugin_manager action:install_bundle target:"<绝对路径>/dsh-getnote"
 | 云端凭证（API Key） | `$DSH_HOME/dsh-getnote/cloud.json`（0600） |
 | 登录令牌（OAuth） | `$DSH_HOME/dsh-getnote/auth.json`（0600，仅 host 可读） |
 | 同步记账 | `$DSH_HOME/dsh-getnote/state.json`（每篇的路径与指纹） |
+| 升级备份 | `$DSH_HOME/dsh-getnote/update-backup/<版本>-<时间戳>/`（应用内升级前的旧版） |
 | 冲突备份 | `<库根>/.conflicts/`（同名时带 `__cloud-` 前缀的是云端版留档） |
 | 回收站 | `<库根>/.trash/` |
 
@@ -234,6 +251,9 @@ lib/settings.js   设置、云端凭证、同步记账的持久化（原子写�
 lib/openapi.js    官方 Open API 客户端 + 字段归一化（normalizeNote / extractAudio）
 lib/mcp-cloud.js  把登录通道包成与 openapi.js 相同的接口（含音频字段桥接）
 lib/biji.js       OAuth（PKCE）与 MCP JSON-RPC 客户端
+lib/scan-cache.js 扫描缓存：同目录 1 秒内并发请求共用一次扫描（库是会被外部改的，所以缓存很短）
+lib/watch.js      文件监听：外部改了库就失效缓存并递增版本号，面板心跳自动重拉
+lib/update.js     应用内升级：读索引比版本、自实现 ustar 解包、备份后覆盖、拒绝链接安装
 lib/cloud-sync.js 同步引擎：四分支决策、指纹、Markdown 渲染、推送
 lib/archive.js    整库 zip 导出/导入（自实现 ZIP 读写，UTF-8 文件名）
 lib/history.js    笔记版本历史（每篇最近 10 版，恢复前先存当前版）
@@ -243,21 +263,46 @@ lib/card/getcard_bridge.py  BLE 协议桥（只做协议，stdout 输出单个 J
 lib/card/wifi_transfer.py   热点快传（会改本机 WLAN 配置，所以单独一个脚本）
 lib/client.js     浏览器产物：sidebar.panellist 入口 + main 面板（笔记/云端/冲突/录音卡/设置/回收站；同步在设置页里）
 locale/           三本界面字典（zh / en / nl）与插件元数据
+scripts/          开发脚本：test-all.mjs（一条命令跑六套）、lint.mjs（零依赖静态检查）、build-index.mjs
 test/             六套离线测试，不联网
 ```
 
 ## 测试
 
 ```
-node test/vault.test.mjs     # 110 项：文件层、frontmatter、搜索语法、双链反查、大纲、冲突解析、回收站、目录/标签增删改名、块列表标签改写、写作热力图、待办勾选
+node test/vault.test.mjs     # 149 项：文件层、frontmatter、搜索语法、双链反查、大纲、冲突解析、回收站、目录/标签增删改名、块列表标签改写、写作热力图、待办勾选、路径穿越、回收站同名留存、附件并发上传、相关推荐、保鲜度、关系图
 node test/sync.test.mjs      # 66 项：同步引擎（重点验「什么情况下不该动用户文件」）
-node test/host.test.mjs      # 238 项：全部 /getnote/* 路由、凭证、白名单、SSRF 防护、Range、批量、历史、归档、目录标签增删改名、冲突采纳方向、热力图、自定义模板、热点快传
-node test/client.test.mjs    # 536 项：UI 结构、Markdown 渲染、播放器、逐字稿、双链、13 项功能接线、错误边界、排序与右键菜单、深色填充白字、三语字典一致性、语言切换、卡片再点收起、录音卡直连面板、标签改名、写作热力图、待办勾选、自定义模板、热点快传、三个界面 bug 回归
+node test/host.test.mjs      # 352 项：全部 /getnote/* 路由、凭证、白名单、SSRF 防护、Range、批量、历史、归档、目录标签增删改名、冲突采纳方向、热力图、自定义模板、热点快传、扫描缓存与 304、跨站拦截、附件上传、章节归一化、关系图/相关推荐/保鲜度、panel token、路径穿越、并发与回收站数据安全、音频代理 SSRF 跳转、zip 预算、链（link/create）、深色模式与关系图配色设置、检查更新（索引形状 / repository 对象 / codeload owner-repo 推导 / compareVersions / ustar 解包 / git 检出上拒绝覆盖）
+node test/client.test.mjs    # 755 项：UI 结构、Markdown 渲染、播放器、逐字稿、双链、13 项功能接线、错误边界、排序与右键菜单、深色填充白字、三语字典一致性、语言切换、卡片再点收起、录音卡直连面板、标签改名、写作热力图、待办勾选、自定义模板、热点快传、三个界面 bug 回归、粘贴拖拽图片、章节跳转、关系图（逐帧排版/缩放平移/标签/配色/惯性滑行）、相关推荐、保鲜度、首屏 /bootstrap、心跳版本号、链按钮与选择器、录音卡居中、图标对调、链小窗（居中/拖动/点外关闭/进出动画/浅蓝配色）、深色模式、检查更新卡、署名
 node test/archive.test.mjs   # 57 项：ZIP 读写互通性（用 Python zipfile 交叉验证）、导入合并策略
 node test/history.test.mjs   # 46 项：版本历史快照、恢复、上限裁剪、非法路径拒绝
 ```
 
-六套共 **1053 项**，全部离线运行，不需要网络也不需要真实凭证。
+六套共 **1425 项**，全部离线运行，不需要网络也不需要真实凭证。
+（`/update/check` 的断言写成「离线或联网都必须回 200」，因为跑测试的机器网络状况不确定。）
+
+一条命令跑全（任何一套挂则整体失败）：
+
+```bash
+node scripts/test-all.mjs
+node scripts/lint.mjs   # 静态检查：node --check / Python ast / 三本 LEX 键一致 / CRLF / 版本号一致
+```
+
+## 配置
+
+```yaml
+# cordis.patch.yml 里这条插件的 config
+- id: dsh-getnote
+  name: dsh-getnote
+  config:
+    vaultPath: 'D:/path/to/your/vault'   # 可选，等价于在设置页里选目录
+    apiToken: ''                          # 可选，见下
+```
+
+- `vaultPath`：默认笔记库。设置页里选过目录之后以设置页为准。
+- `apiToken`：可选。设了之后，**不带 `Origin`/`Referer` 的裸调用**必须带
+  `x-getnote-token` 头，否则 403。面板自己的请求（浏览器同源、带 `Origin`）不受影响，
+  因为它拿不到 token。默认留空——留空时 curl / 自动化脚本照旧能直接调。
 
 ## 边界
 

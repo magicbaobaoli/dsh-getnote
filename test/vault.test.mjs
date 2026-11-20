@@ -28,6 +28,12 @@ import {
   renameTag,
   heatmapOf,
   toggleTodo,
+  graphOf,
+  relatedOf,
+  freshnessOf,
+  normalizeRel,
+  resolveInside,
+  saveAsset,
 } from '../lib/vault.js'
 
 const results = []
@@ -458,10 +464,177 @@ note_url: https://www.biji.com/note/1200000000000000001
       errNone = error
     }
     check('待办: 笔记里没有待办时报 404 而不是假装成功', errNone !== null && errNone.status === 404)
+
+    // 有序列表里的 [ ] 不算待办：host 侧只认 [-*+]，客户端渲染也只给无序项编号。
+    // 两边口径一旦不同，点第一个勾选框会勾掉第 N 个——用户看到的是
+    // 「我明明点的是第一条，勾的却是第三条」。这里把口径钉死。
+    const mixedPath = `${todoDir}/2026-11-17-混合列表.md`
+    await writeFile(
+      join(root, mixedPath),
+      ['---', 'title: 混合列表', '---', '', '1. [ ] 有序第一项', '- [ ] 无序第一项', '2. [ ] 有序第二项', '- [ ] 无序第二项', ''].join('\n'),
+      'utf8',
+    )
+    const mixedRead = async () => readFile(join(root, mixedPath), 'utf8')
+    const m0 = await toggleTodo(root, mixedPath, 0)
+    check(
+      '待办: 有序列表里的 [ ] 不占序号（第 0 条就是第一条无序项）',
+      m0.done === true && (await mixedRead()).includes('- [x] 无序第一项'),
+    )
+    check(
+      '待办: 有序列表里的 [ ] 完全没被改动',
+      (await mixedRead()).includes('1. [ ] 有序第一项') && (await mixedRead()).includes('2. [ ] 有序第二项'),
+    )
+    const m1 = await toggleTodo(root, mixedPath, 1)
+    check(
+      '待办: 第 1 条是第二条无序项（有序项不插队）',
+      m1.done === true && (await mixedRead()).includes('- [x] 无序第二项'),
+    )
+    let errOrdered = null
+    try {
+      await toggleTodo(root, mixedPath, 2)
+    } catch (error) {
+      errOrdered = error
+    }
+    check(
+      '待办: 只有两个无序待办时 index=2 报 404（有序项不算数）',
+      errOrdered !== null && errOrdered.status === 404,
+    )
   }
 } finally {
   await rm(root, { recursive: true, force: true })
 }
+
+// ── P3：关系图 / 相关推荐 / 保鲜度 ───────────────────────────────────────
+{
+  const day = 24 * 60 * 60 * 1000
+  const now = Date.now()
+  const entries = [
+    { path: '语言/雅思写作.md', title: '雅思写作', dir: '语言', date: '2026-11-10', tags: ['雅思', '写作'], mtimeMs: now - 2 * day },
+    { path: '语言/雅思口语.md', title: '雅思口语', dir: '语言', date: '2026-11-11', tags: ['雅思'], mtimeMs: now - 40 * day },
+    { path: '杂/无关.md', title: '无关笔记', dir: '杂', date: '2026-01-01', tags: [], mtimeMs: now - 200 * day },
+  ]
+
+  check('相关推荐按同标签算分', relatedOf(entries, '语言/雅思写作.md').hits.some((hit) => hit.path === '语言/雅思口语.md'))
+  check('相关推荐不带自己', relatedOf(entries, '语言/雅思写作.md').hits.every((hit) => hit.path !== '语言/雅思写作.md'))
+  check('相关推荐给出命中原因', relatedOf(entries, '语言/雅思写作.md').hits[0].reasons.includes('雅思'))
+  check('毫无关系的笔记不进推荐', !relatedOf(entries, '语言/雅思写作.md').hits.some((hit) => hit.path === '杂/无关.md'))
+  check('相关推荐对不存在的路径返回空', relatedOf(entries, '不存在.md').hits.length === 0)
+
+  const fresh = freshnessOf(entries, { staleDays: 90, today: new Date(now) })
+  check('保鲜度分四档', typeof fresh.buckets.week === 'number' && typeof fresh.buckets.older === 'number')
+  // 90 天线：2 天前(本周)、40 天前(本季)、200 天前(更早) 三篇里只有最后一篇算落灰
+  check('保鲜度算出落灰数量', fresh.staleCount === 1)
+  check('落灰按最久没动的排前面', fresh.stale[0].path === '杂/无关.md')
+  check('落灰带上天数', fresh.stale[0].days >= 199)
+  check('保鲜度不含最近动过的', !fresh.stale.some((item) => item.path === '语言/雅思写作.md'))
+
+  // 关系图要读正文，用临时目录造一个真库
+  const gRoot = await mkdtemp(join(tmpdir(), 'gn-graph-'))
+  await writeFile(join(gRoot, 'a.md'), '# A\n\n见 [[b]]\n', 'utf8')
+  await writeFile(join(gRoot, 'b.md'), '# B\n\n见 [[a]] 与 [[c]]\n', 'utf8')
+  await writeFile(join(gRoot, 'c.md'), '# C\n\n没有链接\n', 'utf8')
+  await writeFile(join(gRoot, 'd.md'), '# D\n\n[[不存在]]\n', 'utf8')
+  const gScan = await scanVault(gRoot)
+  const graph = await graphOf(gRoot, gScan.entries)
+  check('关系图只收有连接的节点', graph.nodes.every((node) => node.degree > 0))
+  check('关系图收被链接但自己没写链接的笔记（入链也算连接）', graph.nodes.some((node) => node.path === 'c.md'))
+  check('关系图只收有连接的节点（c 的度数来自入链）', graph.nodes.find((node) => node.path === 'c.md').degree === 1)
+  check('关系图不含只有断链的笔记', !graph.nodes.some((node) => node.path === 'd.md'))
+  check('关系图边数正确（a-b、b-c 两条）', graph.edges.length === 2)
+  check('关系图按连接数给度数', graph.nodes.find((node) => node.path === 'b.md').degree === 2)
+  check('关系图报告库总篇数', graph.total === 4)
+  await rm(gRoot, { recursive: true, force: true })
+}
+
+
+// ── 安全与数据安全回归（0.7.2 审计修复） ───────────────────────────────
+//
+// 这一组对应的都是「不写下来就一定会复发」的东西：路径穿越、同名覆盖、
+// 并发丢文件。它们的共同点是单元测试通过、真实使用才炸，所以每条都直接
+// 打真实的文件系统，不用 mock。
+{
+  // ① 路径穿越：Windows 的盘符冒号能绕过「..」那套检查。修之前
+  //    C:/Users/x/.ssh/id_rsa.md 会被 resolve 成绝对路径，而 relative()
+  //    反查恰好又等于它自己，两道检查同时失效。
+  const escapes = [
+    '../escape.md',
+    'a/../../escape.md',
+    'a:b.md',
+    'C:/Windows/System32/drivers/etc/hosts',
+    'c:/windows/win.ini',
+    'D:/秘密.md',
+    '..\\..\\escape.md',
+  ]
+  for (const bad of escapes) {
+    let rejected = false
+    try {
+      normalizeRel(bad)
+    } catch {
+      rejected = true
+    }
+    check('路径穿越被拒：' + bad, rejected)
+  }
+  check('正常的相对路径仍然放行', normalizeRel('目录/笔记.md') === '目录/笔记.md')
+
+  // 含 .. 但最终仍在库内的合法路径不该被误伤
+  let inRootOk = false
+  try {
+    inRootOk = normalizeRel('a/../b.md') === 'b.md'
+  } catch {
+    inRootOk = false
+  }
+  check('库内的 .. 归一化后仍允许', inRootOk)
+
+  // ② 回收站同名同毫秒不能互相覆盖。修之前 rename 的目标已存在时会静默
+  //    覆盖，实测批量删 30 篇同名笔记只活下来 27~28 个。
+  const tRoot = await mkdtemp(join(tmpdir(), 'gn-trash-collide-'))
+  for (let i = 0; i < 30; i += 1) {
+    await writeFile(join(tRoot, '同名.md'), '# 同名\n\n第 ' + i + ' 份\n', 'utf8')
+    // eslint-disable-next-line no-await-in-loop
+    await trashNote(tRoot, '同名.md')
+  }
+  const trashed = await readdir(join(tRoot, '.trash'))
+  check('回收站：30 次同名删除全部留存', trashed.length === 30, String(trashed.length))
+  const contents = await Promise.all(trashed.map((name) => readFile(join(tRoot, '.trash', name), 'utf8')))
+  check('回收站：30 份内容各不相同（没有互相覆盖）', new Set(contents).size === 30, String(new Set(contents).size))
+  check('回收站：文件名仍是 时间戳__原名 的形状', trashed.every((name) => /^\d{4}-\d{2}-\d{2}T[\d-]+Z__同名\.md$/.test(name)), trashed[0])
+  await rm(tRoot, { recursive: true, force: true })
+
+  // ③ 并发上传附件不能丢。修之前是「先 stat 探测空闲名再 writeFile」，
+  //    两步之间隔着 await，8 个并发只剩 2~3 个文件。
+  const aRoot = await mkdtemp(join(tmpdir(), 'gn-asset-race-'))
+  await writeFile(join(aRoot, '笔记.md'), '# 笔记\n', 'utf8')
+  const uploads = await Promise.all(
+    Array.from({ length: 8 }, (_, i) => saveAsset(aRoot, '笔记.md', Buffer.from('图-' + i), 'png')),
+  )
+  check('并发上传：8 个都拿到结果', uploads.length === 8 && uploads.every((item) => item && item.ok === true))
+  check('并发上传：8 个文件名互不相同', new Set(uploads.map((item) => item.name)).size === 8)
+  const landed = await readdir(join(aRoot, 'asset'))
+  check('并发上传：磁盘上确实有 8 个文件', landed.length === 8, String(landed.length))
+  const bytes = await Promise.all(landed.map((name) => readFile(join(aRoot, 'asset', name), 'utf8')))
+  check('并发上传：8 份内容都没有被覆盖', new Set(bytes).size === 8)
+  await rm(aRoot, { recursive: true, force: true })
+
+  // ④ 附件路径也要过同一道穿越检查（listAssets / 播放都靠它定位）
+  const xRoot = await mkdtemp(join(tmpdir(), 'gn-asset-escape-'))
+  await writeFile(join(xRoot, 'n.md'), '# n\n', 'utf8')
+  let assetEscaped = false
+  try {
+    await saveAsset(xRoot, 'C:/x.md', Buffer.from('x'), 'png')
+  } catch (err) {
+    assetEscaped = err !== null && err !== undefined
+  }
+  check('附件上传也拦盘符路径', assetEscaped)
+  let resolveEscaped = false
+  try {
+    resolveInside(xRoot, '../out.md')
+  } catch {
+    resolveEscaped = true
+  }
+  check('resolveInside 拦库外路径', resolveEscaped)
+  await rm(xRoot, { recursive: true, force: true })
+}
+
 
 const failed = results.filter((r) => !r.ok)
 console.log(`\n${results.length - failed.length}/${results.length} passed`)

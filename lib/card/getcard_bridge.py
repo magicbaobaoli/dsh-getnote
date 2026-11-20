@@ -402,6 +402,14 @@ def do_doctor(_args):
 
 
 def main():
+    # 中文 Windows 控制台默认 cp936，直接 print 中文会变乱码；插件调用时
+    # lib/card.js 会传 PYTHONIOENCODING=utf-8，但用户在命令行里手动跑
+    # `python getcard_bridge.py scan` 时没有那个环境变量，--help 与日志全是乱码。
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     ap = argparse.ArgumentParser(description="得到录音卡电脑直连桥（只读优先）")
     ap.add_argument("command", choices=["scan", "info", "list", "pull", "doctor"])
     ap.add_argument("--addr", default=None)
