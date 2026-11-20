@@ -1,0 +1,53 @@
+{
+  "format": 1,
+  "title": {
+    "en": "DSH plugins by magicbaobaoli",
+    "zh": "DSH 插件"
+  },
+  "plugins": [
+    {
+      "name": "dsh-getnote",
+      "title": {
+        "en": "Get笔记",
+        "zh": "得到大脑"
+      },
+      "description": {
+        "en": "Brings Get笔记 (得到大脑) notes into DSH: one sidebar panel over a local-first Markdown vault, with optional cloud access.\n\nWhat it does: browse by knowledge base and tag, full-text search, Markdown reading with Obsidian wikilinks and inline images, edit/create/delete; audio notes get a real player plus a timestamped transcript, and existing recording attachments in the vault play too; deleted notes land in a trash you can restore from. With cloud connected you can filter by knowledge base, create notes, edit titles and bodies, add/remove tags, mint share links, run semantic search, and push local edits back up.\n\nSync: optional automatic sync from 5 minutes to 12 hours, or manual incremental/full runs. A four-branch decision protects local edits, files changed on both sides go to .conflicts, and notes deleted in the cloud move to the trash.\n\nTwo transports, either one works: sign in to Get笔记 (OAuth, one authorization, recommended) or paste an official Open API key (members only). If the key stops working it silently falls back to the signed-in transport, so features keep working.\n\nLimits: cloud features need a Get笔记 membership, but Markdown already synced stays readable, editable and searchable locally forever. No enterprise delegated authorization, the recorder API is fail-closed, and there is no automatic two-way push.\n\nSince 0.3.0 the panel accent color is customizable: pick one color and the plugin derives the depth gradient (darkest left, lighter middle, near-white reading pane). Tab switches fade in, and the layout honors the OS reduce-motion setting.\n\n0.4.0 adds thirteen more: an outline of the note you are reading, backlink lookup for wikilinks, search qualifiers (tag:/dir:/#) ranked by hit density, four quick-create templates, per-note push and pull, a side-by-side conflict viewer with one-click adoption, batch tagging/moving/trashing, a ten-version history per note, whole-vault zip export and import, a sync-only-while-the-panel-is-open switch, keyboard shortcuts, three reading text sizes, and loading skeletons. The panel also has an error boundary: if rendering ever fails it shows a readable message and a retry button instead of a blank pane.\n\nSince 0.5.0 the left pane is fully editable: folders and tags can be created (the \"+\" at the right end of each title row) and deleted via right-click with a confirmation step; a folder that still holds notes refuses deletion and tells you how many. Sorting offers recent-change / name / count, remembered locally. Text in the dark pane is now plain white. The conflict page gained a collapsed \"resolved\" section, a mark-unresolved action, returns to the list after a decision, and the tab badge counts only pending items. Folder and tag sorting are now independent, and both can be created or right-click deleted (a folder must be empty; deleting a tag never touches notes). Dark-filled controls use white text on every tab. Conflict resolution now decides local-vs-cloud from archive semantics instead of guessing from the filename. Tab transitions no longer fade opacity (the dark left pane used to flash white) and only slide left-to-right. Right-clicking a folder or tag now shows Delete and Cancel inline in that very row instead of a menu far away.\n\nSince 0.6.2, clicking the note that is already open in either the notes list or the cloud list collapses it again and the reading pane goes blank. The panel now ships in Chinese, English and Dutch; switch languages in Settings and the whole interface updates immediately. Direct recorder-card access: pull the original audio off the card over Bluetooth, no cloud round-trip.\n\nSince 0.6.4 the Sync tab is gone — sync settings now live on the Settings page as a card right below Cloud access: pick the channel above, set the cadence below. The toggle, interval, run-now button and result stats are all unchanged. Since 0.6.5 two mobile-parity local features: rename a tag in place (right-click a tag row; renaming onto an existing tag merges them), and a 16-week writing heatmap under \"All notes\" in the left pane — computed entirely offline, so it keeps working after a membership expires. Since 0.6.6 you can tick a to-do box right in the reading view, without switching to edit mode. Since 0.6.7 you can save your own note templates and pick them when creating a note. 0.6.8 adds Wi-Fi transfer for the recorder card: Bluetooth only tells the card to start its hotspot, files come over Wi-Fi (tens of minutes over Bluetooth, one or two minutes over Wi-Fi). 0.6.9 makes a refresh scan the vault once, fetches everything the panel needs in one request, notices files changed by other editors, supports pasting or dropping images into a note, lets you jump to cloud chapters, and adds a link graph, related notes, and a stale-note reminder. Cross-site calls to the HTTP routes are now blocked. 0.7.0: a new Link button in the note header opens a searchable picker to connect any two notes; the note graph now lays out frame by frame with wheel zoom, drag-to-pan, hover highlighting and node labels; the voice-card page is centered. 0.7.1: the link button now uses a chain icon and copy-reference a paintbrush; the link window pops up centered in the reading column, can be dragged, closes on an outside click and animates in and out, in a near-white light blue; graph node and edge colours are selectable in settings (default a very light blue); dark mode and an in-app “check for updates” were added, which downloads the release tarball, backs up the old copy first and refuses linked installs.\n\n0.7.2 adds inertia to the graph canvas (it keeps drifting after you let go, decayed by time so high-refresh displays feel the same) and ships a security pass covering path traversal, a /save variant that could blank a note, trash and concurrent-upload overwrites, and an SSRF hole in the audio proxy. 0.7.3 pushes the graph closer to Obsidian: search by word to light up matching nodes, hover for a card with title, folder, link count and tags, double-click to centre a node, and an \"Isolated\" toggle for notes with no links at all. It also fixes the search field being nearly unreadable in dark mode.",
+        "zh": "把「得到大脑 / Get笔记」的笔记接进 DSH：左侧栏一个面板，本地优先的 Markdown 笔记库，可选连云端。\n\n能做什么：按知识库/标签浏览、全文搜索、Markdown 阅读（含 Obsidian 双链与图片附件）、编辑新建删除；录音笔记带原始音频播放器和按时间戳分条的逐字稿，库里已有的录音附件也能直接播；删除进回收站可恢复。连上云端后能按知识库筛选、新建笔记、改标题正文、增删标签、生成分享链接、语义搜索，也能把本地改动推回云端。\n\n同步：可开自动同步（间隔 5 分钟到 12 小时），或手动增量/全量；四分支决策保护本地修改，两边都改会另存 .conflicts，云端删除会进回收站。\n\n两条通道任选：登录得到大脑（OAuth，一次授权，推荐）或填官方 Open API 的 API Key（仅会员可用）；Key 失效会自动改用登录通道，功能不中断。\n\n限制：云端相关功能需要得到大脑会员，但已经同步下来的 Markdown 永远能在本地读、改、搜索；不做企业代授权；录音卡接口是 fail-closed 的；不做自动双向推送。\n\n0.3.0 起支持自定义面板主题色：选一个颜色即可，左栏最深、中栏浅、右栏近白的层次由插件推导；切换页签带淡入动画，并遵守系统的「减少动效」设置。\n\n0.4.0 起补了十三项功能：本文大纲导航、关联笔记反查双链、搜索支持 tag:/dir:/# 限定并按命中密度排序、四种快捷新建模板、单篇推云端/从云端拉、冲突并排比对一键采纳、批量加标签移目录进回收站、每篇最近十版的版本历史、整库 zip 导出导入、只在面板打开时同步、键盘快捷键、阅读区字号三档、加载骨架屏。面板还带错误边界：万一渲染出错，会显示可读的报错与重试按钮，而不是一片黑屏。\n\n0.5.0 起左栏可以真正整理：目录和标签都能新建（标题行最右侧的「+」）、都能右键删除，删除前会弹确认框再点一次才生效；目录非空时拒绝删除并告诉你还剩几篇笔记。排序支持「按最近修改 / 按名称 / 按条数」三种，选择记在本地。左栏深色区文字统一为白色。冲突页新增「已处理」收纳区与「退回未处理」，采纳后自动回到列表，页签上的数字只数未处理的。 目录与标签的排序已拆成两套，各管各的；两者都能新建与右键删除（删目录只删空目录，删标签不动笔记）。深色填充控件（主按钮、选中项）在所有页签统一白字。冲突采纳方向修正为按留档语义判定，不再按文件名猜。 切页签的入场动画不再做透明度渐变（深色左栏会白闪一下），只保留从左到右的位移。右键目录或标签时，「删除」与「取消」直接出现在被点的那一行里，不再弹到远处。\n\n0.6.2 起：在笔记列表或云端列表里，再点一次已经打开的那条会收起，右栏回到空白。面板现在有中文、英文、荷兰语三种界面语言，在设置里切换即刻生效。 录音卡直连：不经过云端，直接通过蓝牙把录音卡上的原始音频拉进笔记库。\n\n0.6.4 起「同步」不再是独立页签，收进了「设置」页，紧跟「云端接入」那张卡：上面选通道、下面定频率。开关、间隔、立即同步、结果统计全部原样保留。 0.6.5 起对照官方移动端补了两项本地能力：标签可直接改名（右键标签行，改到已存在的名字会合并），左栏「全部笔记」下方有最近 16 周的写作热力图（完全离线计算，会员到期照样画）。 0.6.6 起阅读笔记时可以直接点待办方框勾掉，不用切到编辑模式。 0.6.7 起可以自己攒笔记模板，新建时直接选。 0.6.8 加了录音卡热点快传：蓝牙只负责让卡片开热点，文件走 WiFi 下载（同样的文件蓝牙要几十分钟、热点通常一两分钟）。 0.6.9 让刷新一次只扫一遍库（首屏改成一次请求拿全）、外部改了文件面板会自动刷新、支持粘贴/拖拽图片进笔记、云端章节可点击跳转，并加了关系图、相关推荐、落灰笔记提醒；顺手把 HTTP 路由的跨站调用挡掉了。 0.7.0：笔记头新增「链」按钮，点开搜索并选择任意一篇笔记建立双链；关系图改成逐帧排版，支持滚轮缩放、拖动平移、悬停高亮与节点标签；录音卡页面居中展示。 0.7.1：链按钮换成链子、复制引用换成油漆刷；「链」小窗改为弹出的右栏居中小窗，可按住拖动、点外面收起、带进出动画，配色改成接近白的浅蓝；关系图的节点与连线颜色可在设置里自选（默认很浅的蓝）；新增深色模式与应用内「检查版本更新」（下载并覆盖已安装副本，升级前自动备份，链接安装会被拒绝）。\n\n0.7.2 给关系图加了松手后继续滑一段的惯性，并按时间衰减保证高刷屏手感一致；同时做了一轮安全体检，修掉路径穿越、/save 缺字段清空笔记、回收站与并发上传覆盖文件、音频代理 SSRF 等问题。 0.7.3 把关系图往 Obsidian 的体验推了一步：图上可以按词搜索并把命中节点点亮、悬停浮现标题/目录/连接数/标签的小卡片、双击把某个节点推到画布中央、还多了一个「孤立」开关把没连进来的笔记也画出来；另外修好了深色模式下搜索框「浅字压浅底」看不清的问题。"
+      },
+      "icon": "icon.svg",
+      "author": "magicbaobaoli",
+      "homepage": "https://github.com/magicbaobaoli/dsh-getnote#readme",
+      "repository": {
+        "url": "https://github.com/magicbaobaoli/dsh-getnote"
+      },
+      "metadata": {
+        "category": "notes"
+      },
+      "versions": [
+        {
+          "version": "0.7.3",
+          "publishTimestamp": 1795146605,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/magicbaobaoli/dsh-getnote",
+            "commit": "a294fbb386e659ad60095bd89e8dd2c2ffb67f93"
+          },
+          "engines": {
+            "dsh": ">=0.2.0-rc.1 <0.3.0-0"
+          }
+        }
+      ]
+    }
+  ],
+  "metadata": {
+    "categories": {
+      "notes": {
+        "title": {
+          "en": "Notes & knowledge",
+          "zh": "笔记与知识库"
+        }
+      }
+    }
+  }
+}
